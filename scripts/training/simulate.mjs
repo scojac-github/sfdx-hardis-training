@@ -18,6 +18,28 @@
  *               already exists, after a review: the branch is kept, the commit
  *               is added, and a Pull Request is opened into base only when there
  *               is none yet (the hotfix going back into integration)
+ *   basedOn     the id of another scenario this one was written on top of: its
+ *               patches anchor on lines that story added, so the branch it is
+ *               cut from has to carry that story already. Lab 3.10 promotes
+ *               such a story without the one under it, which is what makes its
+ *               cherry-pick conflict for real. The check says which story to
+ *               merge first instead of failing on a line it cannot find.
+ *   movedFrom   the id of the scenario whose merged Pull Request this one moves
+ *               deployment actions from, to fix their definition after they
+ *               failed (Lab 3.3): the actions listed in moveActions leave the
+ *               actions file of that Pull Request, and __MOVED_FROM__ in a file
+ *               of this one is its number
+ *   files whose path holds {{PR}}
+ *               a deployment actions file is named after the Pull Request that
+ *               carries it, and its number is only known once it is opened: such
+ *               a file is written and pushed in a second commit, right after
+ *   offerMergeLevels
+ *               the levels where merging the Pull Request is not what the lab
+ *               teaches: run from their Training menu, the learner is offered to
+ *               have it merged for them once its checks are green. Level 2 labs
+ *               are about what comes after the merge, and a learner stuck on it
+ *               never gets there. Level 3 is the release manager's, and there the
+ *               review and the merge are the lesson.
  */
 import fs from "fs";
 import path from "path";
@@ -25,27 +47,33 @@ import {
   ROOT, c, title, info, ok, warn, abort, run, git, gitOut,
   select, confirm, universe, hasGh, repoSlug
 } from "../lib/util.mjs";
+import { waitForPullRequestChecks } from "../lib/course-updates.mjs";
+import { report } from "../lib/panel.mjs";
 
 const SIMULATE_DIR = path.join(ROOT, "scripts", "simulate");
 
 /**
- * Whether the fork already has an open Pull Request for that branch. `gh pr
- * create` fails the same way whether one exists, the network is down or gh is
- * signed out, and only the first of those is good news.
+ * The most recent Pull Request of the fork for that branch in that state
+ * ("open", "merged", "closed" or "all"), as { number, url, state }, or null.
+ * `gh pr create` fails the same way whether one exists, the network is down or
+ * gh is signed out, and only the first of those is good news, so this is asked.
  */
-function openPullRequestExists(slug, branch) {
+function pullRequestOf(slug, branch, state) {
+  if (!slug || !hasGh()) {
+    return null;
+  }
   const listed = run(
     "gh",
-    ["pr", "list", "-R", slug, "--head", branch, "--state", "open", "--json", "number"],
+    ["pr", "list", "-R", slug, "--head", branch, "--state", state, "--json", "number,url,state", "--limit", "1"],
     { capture: true, quiet: true }
   );
   if (listed.code !== 0) {
-    return false;
+    return null;
   }
   try {
-    return JSON.parse(listed.stdout || "[]").length > 0;
+    return JSON.parse(listed.stdout || "[]")[0] || null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -69,9 +97,12 @@ export default async function simulate(args) {
   const id = await select(
     "Which teammate work do you need?",
     scenarios.map((s) => ({ value: s.id, label: `${s.title}`, hint: s.usedBy })),
-    args.scenario
+    args.scenario,
+    "scenario"
   );
   const scenario = scenarios.find((s) => s.id === id);
+  // Level 2 is about what comes after the merge; in Level 3 the merge is the lesson
+  const offersMerge = Boolean(level) && (scenario.offerMergeLevels || []).includes(level);
 
   // Somebody who changes an org rather than the repository: an admin in production
   if (scenario.kind === "org") {
@@ -98,6 +129,9 @@ export default async function simulate(args) {
   } else {
     info(`  It creates the branch ${c.bold(scenario.branch)} from your current ${c.bold(from)},`);
     info(`  and opens a Pull Request into ${c.bold(base)} in ${c.bold(slug || "your fork")}.`);
+    if (scenario.basedOn) {
+      info(`  It is written on top of ${c.bold(scenario.basedOn.toUpperCase().split("-").slice(0, 2).join("-"))}, which has to be merged into ${c.bold(from)} first.`);
+    }
   }
 
   const sure = args.yes === true || (await confirm("Create it?", true));
@@ -143,7 +177,15 @@ export default async function simulate(args) {
   }
 
   title("1 of 4  Creating the teammate branch");
-  run("git", ["fetch", "origin", "--prune"]);
+  // Checked: a fetch that failed leaves the fork's branches as this computer last saw them, and
+  // the teammate would start from an old commit without anything saying so
+  if (run("git", ["fetch", "origin", "--prune"]).code !== 0) {
+    restore();
+    abort(
+      "Your fork could not be read, so nothing was simulated.",
+      "Check your connection and your GitHub sign-in in VS Code, then run Simulate my teammates again."
+    );
+  }
   if (scenario.continues) {
     if (!gitOut(["rev-parse", "--verify", "--quiet", `origin/${scenario.branch}`])) {
       abort(
@@ -157,6 +199,34 @@ export default async function simulate(args) {
       abort(`There is no ${from} branch to branch from.`, "Run Reset this level first, from the Training menu of your level.");
     }
     run("git", ["pull", "--ff-only", "origin", from], { quiet: true });
+    // The pull is allowed to fail, and a local branch left behind the fork would give the
+    // teammate a branch cut from an old commit: a hotfix cut from a preprod that never saw the
+    // releases carries the pipeline configuration of Level 1. When the local branch does not hold
+    // what the fork holds, the teammate starts from the fork.
+    const forkHead = gitOut(["rev-parse", "--verify", "--quiet", `origin/${from}`]);
+    if (forkHead && run("git", ["merge-base", "--is-ancestor", forkHead, "HEAD"], { quiet: true }).code !== 0) {
+      warn(`Your local ${from} does not hold what the ${from} of your fork holds, and could not be updated. The teammate branch is cut from the one of your fork. Your own ${from} stays as it is: pull it from the Source Control panel before you work on it.`);
+      if (run("git", ["checkout", "--detach", forkHead], { quiet: true }).code !== 0) {
+        restore();
+        abort(
+          `Your local ${from} does not hold what the ${from} of your fork holds, and the fork's could not be checked out.`,
+          `Switch to ${from}, pull it from the Source Control panel, then run Simulate my teammates again.`
+        );
+      }
+    }
+    // Checked on the branch the story is cut from, once it is up to date: the
+    // story under this one has to be merged there, not merely simulated.
+    const under = scenario.basedOn ? all.find((s) => s.id === scenario.basedOn) : null;
+    if (scenario.basedOn && !under) {
+      abort(`${scenario.id} says it is based on ${scenario.basedOn}, which is not a known scenario.`);
+    }
+    if (under && !scenarioIsApplied(under)) {
+      restore();
+      abort(
+        `${scenario.title} was written on top of ${under.title}, which is not in your ${from} branch yet.`,
+        `Merge ${under.title.split(" ")[0]} into ${from} first, then run Simulate my teammates again. ${scenario.usedBy} gives the order.`
+      );
+    }
     const existing = gitOut(["rev-parse", "--verify", scenario.branch]);
     if (existing) {
       warn(`${scenario.branch} already exists. It is being recreated from the current ${from}.`);
@@ -175,14 +245,36 @@ export default async function simulate(args) {
   ok(`On ${scenario.branch}`);
 
   title("2 of 4  Applying the teammate changes");
+  // The Pull Request the actions are moved from has to be merged: its number names its file
+  let movedFromPr = null;
+  if (scenario.movedFrom) {
+    const source = all.find((s) => s.id === scenario.movedFrom);
+    const mergedSource = source ? pullRequestOf(slug, source.branch, "merged") : null;
+    movedFromPr = mergedSource ? mergedSource.number : null;
+    if (!movedFromPr) {
+      restore();
+      abort(
+        `${scenario.title} fixes the actions of ${source ? source.title : scenario.movedFrom}, whose Pull Request is not merged in your fork.`,
+        `Simulate and merge ${source ? source.title.split(" ")[0] : scenario.movedFrom} first. ${scenario.usedBy} gives the order.`
+      );
+    }
+  }
   const planned = planPatches(scenario);
-  const applied = [...applyFiles(scenario), ...writePlanned(planned)];
+  const applied = [...applyFiles(scenario), ...writePlanned(planned), ...removeMovedActions(scenario, movedFromPr)];
   applied.forEach((f) => info(c.dim(`    ${f}`)));
   ok(`${applied.length} file(s) written`);
 
   title("3 of 4  Committing as your teammate");
-  run("git", ["add", "-A"]);
-  const hasChanges = gitOut(["status", "--porcelain"]) !== "";
+  // Only the files the scenario wrote or deleted, never the whole working tree.
+  // The Salesforce extensions write files of their own while this runs, like
+  // .vscode/settings.json and lwc/jsconfig.json: "add everything" put them in
+  // the teammate commit, MegaLinter reformatted jsconfig.json and pushed a fix
+  // on top, the Pull Request moved past the commit pushed here, and the merge
+  // further down refused it. Asked of the index rather than of the working tree
+  // for the same reason: a file somebody else wrote is not a change of the
+  // teammate's.
+  stageOnly(applied);
+  const hasChanges = run("git", ["diff", "--cached", "--quiet"], { quiet: true }).code !== 0;
   if (hasChanges) {
     // The message goes through a file: on Windows the shell stops an argument at
     // its first line break, and the body would be lost
@@ -211,7 +303,21 @@ export default async function simulate(args) {
     ok("Nothing new to commit: the branch goes as it is");
   } else {
     warn(`Nothing to commit: the teammate changes are already in your ${from} branch.`);
+    // Most often because the learner already merged this Pull Request, by hand or
+    // from an earlier run: that is the step done, not a failure, and the address
+    // tells them where it went
+    const mergedBefore = pullRequestOf(slug, scenario.branch, "merged");
+    if (mergedBefore) {
+      ok(`Your teammate's Pull Request is already merged: ${c.cyan(mergedBefore.url)}`);
+      if (scenario.nextStepMerged && offersMerge) {
+        info(`  ${scenario.nextStepMerged}`);
+      }
+    }
     restore();
+    // The branch was only made to hold the teammate commit, and there is none. Left
+    // behind, it is a branch nobody pushed, and Claim my badge refuses to run until
+    // the learner pushes a teammate branch they never made.
+    run("git", ["branch", "-D", scenario.branch], { quiet: true });
     return;
   }
 
@@ -221,6 +327,7 @@ export default async function simulate(args) {
     abort("The branch could not be pushed to your fork.", "Check that origin points at your own fork and that you can push to it.");
   }
 
+  let prUrl = null;
   if (!hasGh()) {
     warn("The GitHub CLI is not installed, so the Pull Request was not opened automatically.");
     info(`  Open it yourself: ${c.cyan(`https://github.com/${slug}/compare/${base}...${scenario.branch}?expand=1`)}`);
@@ -234,7 +341,11 @@ export default async function simulate(args) {
     // address of the Pull Request is the one line the learner needs next, and
     // what gh prints goes nowhere they can see when this runs in the panel.
     let pr = { code: 1, stdout: "", stderr: "" };
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // Asked first: a run again on a branch whose Pull Request is still open would
+    // otherwise spend its three tries on "it already exists", reported as a branch
+    // GitHub cannot see yet
+    const openBefore = pullRequestOf(slug, scenario.branch, "open");
+    for (let attempt = 1; attempt <= 3 && !openBefore; attempt++) {
       pr = run("gh", [
         "pr", "create",
         // Named explicitly: in a fork with no default repository set, gh picks
@@ -256,23 +367,249 @@ export default async function simulate(args) {
     fs.rmSync(bodyFile, { force: true });
     // "It already exists" is the only failure that means success here, and the
     // way to know is to ask the fork rather than to assume
-    const alreadyOpen = pr.code !== 0 && openPullRequestExists(slug, scenario.branch);
+    const alreadyOpen = openBefore || (pr.code !== 0 ? pullRequestOf(slug, scenario.branch, "open") : null);
     if (alreadyOpen) {
+      prUrl = alreadyOpen.url || `https://github.com/${slug}/pulls`;
       ok("The new commit is on the Pull Request your teammate already opened");
+      info(`  ${c.cyan(prUrl)}`);
     } else if (pr.code !== 0) {
       warn("The Pull Request could not be opened automatically. It may already exist.");
       info(`  Check: ${c.cyan(`https://github.com/${slug}/pulls`)}`);
     } else {
       ok("Pull Request opened");
-      const url = (pr.stdout || "").match(/https:\/\/\S+\/pull\/\d+/);
-      info(`  ${c.cyan(url ? url[0] : `https://github.com/${slug}/pulls`)}`);
+      prUrl = (pr.stdout || "").match(/https:\/\/\S+\/pull\/\d+/)?.[0] || `https://github.com/${slug}/pulls`;
+      info(`  ${c.cyan(prUrl)}`);
     }
   }
 
+  // Files named after the Pull Request number, known only now: second commit, same author
+  const prNumber = Number((prUrl || "").match(/\/pull\/(\d+)/)?.[1] || 0);
+  if (numberedFiles(scenario).length > 0) {
+    if (!prNumber) {
+      warn("The Pull Request number is unknown, so its deployment actions file was not added.");
+    } else {
+      const numbered = writeNumberedFiles(scenario, prNumber, movedFromPr);
+      numbered.forEach((f) => info(c.dim(`    ${f}`)));
+      // The same rule as the first commit: the files of the scenario, nothing else
+      stageOnly(numbered);
+      const messageFile = path.join(ROOT, ".training-commit-message.txt");
+      fs.writeFileSync(messageFile, `${scenario.prTitle}: deployment actions of #${prNumber}`, "utf8");
+      const commit = run("git", [
+        "-c", `user.name=${scenario.author.name}`,
+        "-c", `user.email=${scenario.author.email}`,
+        "commit", "-F", messageFile
+      ]);
+      fs.rmSync(messageFile, { force: true });
+      if (commit.code !== 0 || run("git", ["push", "origin", scenario.branch]).code !== 0) {
+        warn(`The deployment actions file of #${prNumber} could not be committed and pushed.`);
+      } else {
+        ok(`Deployment actions file of #${prNumber} added to the Pull Request`);
+      }
+    }
+  }
+
+  // The commit the Pull Request has to carry before its checks mean anything, read
+  // while the teammate branch is still checked out
+  const pushed = gitOut(["rev-parse", "HEAD"]);
+
+  // Before the wait, which can take minutes: the learner is back on their own
+  // branch with their own work while GitHub runs the checks
   restore();
 
+  let merged = false;
+  if (prUrl && offersMerge) {
+    // A scripted run (--yes) merges only when it says so with --merge: it may be the
+    // one meant to review and merge next
+    let mergeIt = args.merge === true || args.merge === "true";
+    if (args.merge === undefined && args.yes !== true) {
+      info("");
+      info("  You can merge it yourself on GitHub, the way the lab shows, or let this command do it:");
+      info("  it waits for the checks of the Pull Request to pass, about two to four minutes, then merges it.");
+      mergeIt = await confirm("Merge it for you once its checks pass?", true);
+    }
+    if (mergeIt) {
+      merged = await mergeWhenGreen(slug, prUrl, pushed);
+    }
+  }
+
   title("Done");
-  info(`  ${scenario.nextStep}`);
+  info(`  ${merged && scenario.nextStepMerged ? scenario.nextStepMerged : scenario.nextStep}`);
+  // A button at the bottom of the panel, so nobody copies the address by hand
+  if (prUrl && /\/pull\/\d+/.test(prUrl)) {
+    report(prUrl, "Open the Pull Request", "actionUrl");
+  }
+}
+
+/**
+ * Stages the files a scenario reported, and nothing else.
+ *
+ * applyFiles and writePlanned label what they did, "(patched)" or "(deleted)",
+ * for the lines printed to the learner; the path is what comes before. Every
+ * path is relative to the root of the repository, with forward slashes, which
+ * is what git takes as a pathspec. A deleted file is staged as a deletion by
+ * the same "add -A" when it was tracked. A path that is neither on disk nor
+ * tracked, an untracked file the scenario deleted, is left out: git refuses the
+ * whole command on a pathspec that matches nothing, and nothing would be staged.
+ * Nothing is run on an empty list either: "git add -A --" with no path at all
+ * stages the whole working tree, which is the very thing this exists to avoid.
+ */
+function stageOnly(reported) {
+  const paths = [...new Set(reported.map((line) => line.replace(/ \((patched|deleted)\)$/, "")))].filter(
+    (p) => fs.existsSync(path.join(ROOT, p)) || gitOut(["ls-files", "--", p]) !== ""
+  );
+  if (paths.length > 0) {
+    run("git", ["add", "-A", "--", ...paths]);
+  }
+}
+
+/**
+ * Waits for the checks of a Pull Request, then squash merges it. Returns true
+ * once it is merged, by this command or by the learner on GitHub.
+ *
+ * The same rule as the merge button: nothing is merged while a check is running
+ * or red, which the branch protection of the fork would refuse anyway. A red
+ * check stops here and sends the learner to the Pull Request, because what is
+ * wrong is in its log, not in this command.
+ */
+async function mergeWhenGreen(slug, prUrl, pushed) {
+  title("Waiting for the checks of the Pull Request");
+  info(`  ${c.cyan(prUrl)}`);
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const view = () => {
+    const res = run("gh", ["pr", "view", prUrl, "--repo", slug, "--json", "state,headRefOid"], { capture: true, quiet: true });
+    try {
+      return JSON.parse(res.stdout || "{}");
+    } catch {
+      return {};
+    }
+  };
+  const merged = () => {
+    ok(`Pull Request merged into its base branch: ${c.cyan(prUrl)}`);
+    run("git", ["fetch", "origin", "--prune"], { quiet: true });
+    return true;
+  };
+
+  // Right after a push onto a Pull Request that was already open, GitHub can still
+  // list the checks of the commit before, red or green. Read them only once the
+  // Pull Request carries the commit just pushed.
+  for (let attempt = 0; attempt < 12 && view().headRefOid !== pushed; attempt++) {
+    await wait(5000);
+  }
+
+  const result = await waitForPullRequestChecks(slug, prUrl, { timeoutMs: 20 * 60 * 1000 });
+  // The learner may have merged it on GitHub while this waited: the job is done
+  if (view().state === "MERGED") {
+    return merged();
+  }
+  if (result.none) {
+    warn("No check ran on the Pull Request, so it was not merged.");
+    info("  GitHub Actions are probably off on your fork: Lab 1.6 step 2 says how to turn them on.");
+    info(`  Then merge it yourself on GitHub: ${c.cyan(prUrl)}`);
+    return false;
+  }
+  if (!result.ok) {
+    const what = result.timedOut ? "did not finish within 20 minutes" : "failed";
+    warn(`${result.failed.map((check) => check.name).join(" and ")} ${what}, so the Pull Request was not merged.`);
+    info(`  Open it to read why: ${c.cyan(prUrl)}`);
+    return false;
+  }
+
+  ok("All checks passed");
+  // MegaLinter commits its own formatting fixes onto the branch of a Pull
+  // Request, and the head then moves past the commit pushed here. Merging with
+  // --match-head-commit is what stops anything somebody else pushed from being
+  // merged unseen, so the new head is taken only when every commit on top is
+  // that fix, committed by the GitHub Actions bot. Its checks are waited for again, once:
+  // a head that moves a second time is refused like anything else.
+  let head = pushed;
+  const fixedHead = linterFixHead(slug, prUrl, pushed);
+  if (fixedHead) {
+    info("  MegaLinter pushed a formatting fix onto the Pull Request, and the checks run again on it.");
+    for (let attempt = 0; attempt < 12 && view().headRefOid !== fixedHead; attempt++) {
+      await wait(5000);
+    }
+    const again = await waitForPullRequestChecks(slug, prUrl, { timeoutMs: 20 * 60 * 1000 });
+    if (view().state === "MERGED") {
+      return merged();
+    }
+    // No check on the fix means nothing proved it: never merge a commit no check ran on
+    if (again.none) {
+      warn("No check ran on the fix of MegaLinter, so the Pull Request was not merged.");
+      info(`  Merge it yourself on GitHub once its checks are green: ${c.cyan(prUrl)}`);
+      return false;
+    }
+    if (!again.ok) {
+      const what = again.timedOut ? "did not finish within 20 minutes" : "failed";
+      warn(`${again.failed.map((check) => check.name).join(" and ")} ${what} on the fix of MegaLinter, so the Pull Request was not merged.`);
+      info(`  Open it to read why: ${c.cyan(prUrl)}`);
+      return false;
+    }
+    ok("All checks passed on the fix of MegaLinter");
+    head = fixedHead;
+  }
+  const merge = run("gh", ["pr", "merge", prUrl, "--repo", slug, "--squash", "--match-head-commit", head], { capture: true, quiet: true });
+  if (merge.code === 0) {
+    return merged();
+  }
+  // The learner can press the button in the same seconds, and GitHub then refuses
+  // the second merge while it still reports the Pull Request as open for a moment.
+  // Measured once: both merges in the same second, OPEN read right after. Asked
+  // again for ten seconds before calling it a failure.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (view().state === "MERGED") {
+      return merged();
+    }
+    await wait(2000);
+  }
+  const why = `${merge.stderr || merge.stdout}`.trim().split(/\r?\n/).pop();
+  warn("The Pull Request could not be merged automatically. Merge it yourself on GitHub.");
+  if (why) {
+    info(c.dim(`    GitHub said: ${why}`));
+  }
+  info(`  ${c.cyan(prUrl)}`);
+  return false;
+}
+
+/** The headline of the commit MegaLinter pushes, commit_message in .github/workflows/megalinter.yml. */
+const LINTER_FIX_HEADLINE = "chore(megalinter): apply linters fixes";
+
+/**
+ * The new head of the Pull Request when everything after `pushed` is the
+ * formatting fix MegaLinter commits as the GitHub Actions bot, or null: when the
+ * head did not move, when `pushed` is not in the commits of the Pull Request any
+ * more (a force push), or when any newer commit is somebody else's.
+ */
+function linterFixHead(slug, prUrl, pushed) {
+  // The REST list of the Pull Request commits, because it carries the committer: the
+  // auto-commit action of the MegaLinter workflow commits as github-actions[bot] but
+  // keeps the learner who triggered the run as the author. Measured on a learner fork.
+  const number = (prUrl.match(/\/pull\/(\d+)/) || [])[1];
+  if (!number) {
+    return null;
+  }
+  const res = run("gh", ["api", `repos/${slug}/pulls/${number}/commits?per_page=100`], { capture: true, quiet: true });
+  let commits = [];
+  try {
+    commits = JSON.parse(res.stdout || "[]");
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(commits) || commits.length === 0) {
+    return null;
+  }
+  const head = commits[commits.length - 1].sha;
+  if (head === pushed) {
+    return null;
+  }
+  const at = commits.findIndex((commit) => commit.sha === pushed);
+  const newer = at < 0 ? [] : commits.slice(at + 1);
+  const committedByTheBot = (commit) =>
+    /^github-actions(\[bot\])?$/i.test(commit.committer?.login || "") ||
+    /^github-actions(\[bot\])?$/i.test(commit.commit?.committer?.name || "");
+  const headline = (commit) => (commit.commit?.message || "").split(/\r?\n/)[0];
+  const onlyFixes =
+    newer.length > 0 && newer.every((commit) => headline(commit) === LINTER_FIX_HEADLINE && committedByTheBot(commit));
+  return onlyFixes ? head : null;
 }
 
 /**
@@ -303,7 +640,7 @@ async function simulateOrgChange(scenario, args) {
   info(`  ${scenario.nextStep}`);
 }
 
-function loadScenarios() {
+export function loadScenarios() {
   if (!fs.existsSync(SIMULATE_DIR)) {
     return [];
   }
@@ -325,14 +662,17 @@ function loadScenarios() {
  * Each patch is { file, block, insertBefore | insertAfter | remove }, { file, replace: { from, to } },
  * or one of the structural patches of applyStructuralPatch below. A replace works whatever the line
  * endings of the learner's working copy.
+ *
+ * `root` is the learner's repository. The verification scripts pass a throwaway
+ * clone instead, to replay the same scenarios outside anybody's working copy.
  */
-function planPatches(scenario) {
+export function planPatches(scenario, root = ROOT) {
   // Every patch is worked out in memory first, and nothing is written until all
   // of them fit: a scenario that stopped half way used to leave the permission
   // set changed and the field file written, on a branch the learner never asked for.
   const planned = new Map();
   for (const patch of scenario.patches || []) {
-    const target = path.join(ROOT, patch.file);
+    const target = path.join(root, patch.file);
     if (!planned.has(target) && !fs.existsSync(target)) {
       abort(
         `The teammate change expects ${patch.file}, which is not in your project.`,
@@ -387,13 +727,65 @@ function planPatches(scenario) {
   return planned;
 }
 
-function writePlanned(planned) {
+export function writePlanned(planned, root = ROOT) {
   const written = [];
   for (const [target, content] of planned) {
     fs.writeFileSync(target, content, "utf8");
-    written.push(`${path.relative(ROOT, target).replace(/\\/g, "/")} (patched)`);
+    written.push(`${path.relative(root, target).replace(/\\/g, "/")} (patched)`);
   }
   return written;
+}
+
+/**
+ * Whether a scenario's changes are already in the working copy: every file it
+ * ships is there, and every patch would be reported as "already carries this
+ * change". This is what `basedOn` reads before cutting a branch, and what the
+ * verification scripts use to know what a synthetic branch holds.
+ */
+export function scenarioIsApplied(scenario, root = ROOT) {
+  const filesDir = path.join(scenario.dir, "files");
+  if (fs.existsSync(filesDir)) {
+    const walk = (dir, rel) =>
+      fs.readdirSync(dir, { withFileTypes: true }).every((entry) => {
+        const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+        return entry.isDirectory()
+          ? walk(path.join(dir, entry.name), relPath)
+          : fs.existsSync(path.join(root, relPath));
+      });
+    if (!walk(filesDir, "")) {
+      return false;
+    }
+  }
+  for (const patch of scenario.patches || []) {
+    const target = path.join(root, patch.file);
+    if (!fs.existsSync(target)) {
+      return false;
+    }
+    const content = fs.readFileSync(target, "utf8");
+    if (patch.fieldPermission) {
+      if (!new RegExp(`<field>${patch.fieldPermission.field.replace(/\./g, "\\.")}</field>`).test(content)) {
+        return false;
+      }
+    } else if (patch.layoutField) {
+      if (!content.includes(`<field>${patch.layoutField}</field>`)) {
+        return false;
+      }
+    } else if (patch.removeLayoutField) {
+      if (content.includes(`<field>${patch.removeLayoutField}</field>`)) {
+        return false;
+      }
+    } else if (patch.replace) {
+      const eol = content.includes("\r\n") ? "\r\n" : "\n";
+      if (!content.includes(patch.replace.to.replace(/\r?\n/g, eol))) {
+        return false;
+      }
+    } else if (patch.block) {
+      if (!content.includes(patch.block.trim())) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /**
@@ -460,7 +852,7 @@ function applyStructuralPatch(patch, content) {
   return content.slice(0, at) + block + content.slice(at);
 }
 
-function applyFiles(scenario) {
+export function applyFiles(scenario, root = ROOT) {
   const filesDir = path.join(scenario.dir, "files");
   if (!fs.existsSync(filesDir)) {
     return [];
@@ -472,8 +864,11 @@ function applyFiles(scenario) {
       const relPath = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         walk(from, relPath);
+      } else if (relPath.includes("{{PR}}")) {
+        // Written once the Pull Request number is known: writeNumberedFiles
+        continue;
       } else {
-        const to = path.join(ROOT, relPath);
+        const to = path.join(root, relPath);
         fs.mkdirSync(path.dirname(to), { recursive: true });
         fs.copyFileSync(from, to);
         written.push(relPath);
@@ -482,11 +877,80 @@ function applyFiles(scenario) {
   };
   walk(filesDir, "");
   for (const gone of scenario.deletes || []) {
-    const target = path.join(ROOT, gone);
+    const target = path.join(root, gone);
     if (fs.existsSync(target)) {
       fs.rmSync(target, { force: true });
       written.push(`${gone} (deleted)`);
     }
   }
   return written;
+}
+
+/**
+ * The files of a scenario named after its own Pull Request number ({{PR}} in the path).
+ */
+export function numberedFiles(scenario) {
+  const filesDir = path.join(scenario.dir, "files");
+  if (!fs.existsSync(filesDir)) {
+    return [];
+  }
+  const found = [];
+  const walk = (dir, rel) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(path.join(dir, entry.name), relPath);
+      } else if (relPath.includes("{{PR}}")) {
+        found.push(relPath);
+      }
+    }
+  };
+  walk(filesDir, "");
+  return found;
+}
+
+/**
+ * Write the files named after the Pull Request number, with {{PR}} and __MOVED_FROM__ replaced (a token Prettier leaves alone in YAML)
+ * in their path and their content.
+ */
+export function writeNumberedFiles(scenario, prNumber, movedFromPr, root = ROOT) {
+  const fill = (text) => text.replaceAll("{{PR}}", String(prNumber)).replaceAll("__MOVED_FROM__", String(movedFromPr || ""));
+  return numberedFiles(scenario).map((relPath) => {
+    const to = path.join(root, fill(relPath));
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.writeFileSync(to, fill(fs.readFileSync(path.join(scenario.dir, "files", relPath), "utf8")), "utf8");
+    return fill(relPath);
+  });
+}
+
+/**
+ * Take the actions listed in moveActions out of the actions file of the Pull Request they are
+ * moved from. The file is written by a scenario, one "  - id: <id>" block per action, so a block
+ * runs from its id line to the next one, or to the next top-level key.
+ */
+export function removeMovedActions(scenario, movedFromPr, root = ROOT) {
+  if (!movedFromPr || !(scenario.moveActions || []).length) {
+    return [];
+  }
+  const relPath = `scripts/actions/.sfdx-hardis.${movedFromPr}.yml`;
+  const file = path.join(root, relPath);
+  if (!fs.existsSync(file)) {
+    return [];
+  }
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const kept = [];
+  let skipping = false;
+  for (const line of lines) {
+    const idMatch = line.match(/^\s*- id: (\S+)\s*$/);
+    if (idMatch) {
+      skipping = scenario.moveActions.includes(idMatch[1]);
+    } else if (/^\S/.test(line)) {
+      skipping = false;
+    }
+    if (!skipping) {
+      kept.push(line);
+    }
+  }
+  fs.writeFileSync(file, kept.join("\n"), "utf8");
+  return [relPath];
 }

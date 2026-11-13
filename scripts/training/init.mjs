@@ -40,20 +40,26 @@ import os from "os";
 import path from "path";
 import {
   ROOT, c, title, info, ok, warn, abort, run, runAsync, runJson, parseJsonOutput, git, gitOut,
-  select, confirm, connectedOrgs, orgChoices, universe, ensureGh, repoSlug
+  select, confirm, connectedOrgs, orgChoices, universe, ensureGh, confirmGhAccount, repoSlug, openUrl, removeTempDir,
+  readProgress, writeProgress
 } from "../lib/util.mjs";
-import { deployAppToAll, grantManager, loadData, recordSeeded, alreadySeeded } from "./seed.mjs";
-import { REQUIRED_CHECKS, protectBranches, withProtectionLifted } from "../lib/protection.mjs";
+import { deployAppToAll, grantManager, loadData, recordSeeded, alreadySeeded, workInEnglish } from "./seed.mjs";
+import { REQUIRED_CHECKS, protectBranches, deleteMergedBranches, withProtectionLifted } from "../lib/protection.mjs";
 
 const UPSTREAM = "hardisgroupcom/sfdx-hardis-training";
 const SCRATCH_DEF = path.join("config", "project-scratch-def.json");
 // The longest a scratch org can live. Setting the maximum is what lets a learner
 // take the course over a few weeks without meeting an expired org.
 const DURATION_DAYS = 30;
+// The settings of the scratch definition that switch a Salesforce feature off, which a scratch
+// org created before they were added still has on: see alignScratchOrgs.
+const SHAPE_SETTINGS = ["fieldServiceSettings", "workDotComSettings"];
 // Branches the fork needs for Levels 1 and 2. main exists in every fork, and
 // preprod is created by the release manager in Lab 3.1, from main.
 const PIPELINE_BRANCHES = ["integration", "uat"];
 const STEPS = 8;
+// How long step 2 waits for the learner to click the Actions banner of a new fork.
+const ACTIONS_WAIT_MINUTES = 10;
 
 /** The orgs this command owns, read from the universe so the labs and the code agree. */
 function trainingOrgs() {
@@ -127,7 +133,7 @@ export async function findDevHub(orgs, preselected) {
   const { devHub } = trainingOrgs();
   const candidates = orgs.filter((o) => !o.isScratch);
   if (preselected) {
-    return select("Which org is your Developer Edition org?", orgChoices(candidates), preselected);
+    return select("Which org is your Developer Edition org?", orgChoices(candidates), preselected, "org");
   }
   const byAlias = candidates.find((o) => (o.aliases || []).includes(devHub.alias));
   if (byAlias) {
@@ -143,23 +149,32 @@ export async function findDevHub(orgs, preselected) {
   return select("Which org is your Developer Edition org?", orgChoices(candidates), null);
 }
 
-/** True when the org answers the one query only a Dev Hub can. */
-function isDevHub(alias) {
-  const res = runJson("sf", ["data", "query", "--query", "SELECT Id FROM ScratchOrgInfo LIMIT 1", "--target-org", alias, "--json"]);
-  return res?.status === 0;
-}
+const DEV_HUB_QUERY_TIMEOUT_MS = 2 * 60 * 1000;
+// The deploy waits 10 minutes itself, this is only for a CLI that never returns
+const DEV_HUB_DEPLOY_TIMEOUT_MS = 11 * 60 * 1000;
+const DEV_HUB_BY_HAND = "Open the org, go to Setup > Dev Hub, switch Enable Dev Hub on, then click Set up my training environment again.";
 
 /**
  * Turns Dev Hub on, which is one setting in Setup and cannot be turned off again.
  * On a throwaway Developer Edition org that costs nothing. It is deployed as
  * metadata rather than clicked, so nobody has to find the page.
+ *
+ * Every wait is announced before it starts, and the deploy says every minute
+ * that it is still running: without that, a slow deploy and a stuck one look
+ * the same in the panel.
  */
 export async function ensureDevHub(alias) {
-  if (isDevHub(alias)) {
+  info(`Checking whether ${c.bold(alias)} is a Dev Hub...`);
+  const before = await isDevHub(alias);
+  if (before === "timeout") {
+    abort(`${alias} did not answer within ${DEV_HUB_QUERY_TIMEOUT_MS / 60000} minutes.`, DEV_HUB_BY_HAND);
+  }
+  if (before) {
     ok(`${c.bold(alias)} is already a Dev Hub.`);
     return;
   }
-  info(`Turning Dev Hub on in ${c.bold(alias)}.`);
+  info(`Turning Dev Hub on in ${c.bold(alias)}: deploying the Dev Hub setting, up to 10 minutes.`);
+  info(c.dim(`    If it takes too long: open ${alias}, Setup > Dev Hub, switch Enable Dev Hub on, then click Set up my training environment again.`));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "helios-devhub-"));
   fs.mkdirSync(path.join(dir, "settings"));
   fs.writeFileSync(
@@ -189,25 +204,40 @@ export async function ensureDevHub(alias) {
     ].join("\n"),
     "utf8"
   );
-  const res = run(
-    "sf",
-    ["project", "deploy", "start", "--metadata-dir", dir, "--target-org", alias, "--wait", "10", "--json"],
-    { quiet: true, capture: true }
-  );
-  fs.rmSync(dir, { recursive: true, force: true });
-  if (res.code !== 0) {
+  const started = Date.now();
+  const ticker = setInterval(() => {
+    const minutes = Math.round((Date.now() - started) / 60000);
+    info(c.dim(`    Still deploying the Dev Hub setting (${minutes} min)...`));
+  }, 60 * 1000);
+  let res;
+  try {
+    res = await runAsync(
+      "sf",
+      ["project", "deploy", "start", "--metadata-dir", dir, "--target-org", alias, "--wait", "10", "--json"],
+      { timeoutMs: DEV_HUB_DEPLOY_TIMEOUT_MS }
+    );
+  } finally {
+    clearInterval(ticker);
+    removeTempDir(dir);
+  }
+  if (res.timedOut) {
+    warn(`The deploy of the Dev Hub setting to ${alias} did not end within ${DEV_HUB_DEPLOY_TIMEOUT_MS / 60000} minutes.`);
+  } else if (res.code !== 0) {
     const json = parseJsonOutput(res.stdout);
     warn(json?.message || (res.stderr || res.stdout).trim().split("\n").slice(-5).join("\n"));
   }
   // The setting is saved before the objects behind it answer queries
-  for (let attempt = 0; res.code === 0 && attempt < 12 && !isDevHub(alias); attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+  let after = false;
+  if (res.code === 0) {
+    info(`Waiting for Dev Hub to take effect in ${c.bold(alias)}, up to a minute...`);
+    after = await isDevHub(alias);
+    for (let attempt = 0; after !== true && attempt < 12; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      after = await isDevHub(alias);
+    }
   }
-  if (res.code !== 0 || !isDevHub(alias)) {
-    abort(
-      `Dev Hub could not be turned on in ${alias}.`,
-      "Open the org, go to Setup > Dev Hub, switch Enable Dev Hub on, then click Set up my training environment again."
-    );
+  if (after !== true) {
+    abort(`Dev Hub could not be turned on in ${alias}.`, DEV_HUB_BY_HAND);
   }
   // The org answers the query, but the CLI still has "not a Dev Hub" in the
   // auth file it wrote when the org was connected, and `sf org create scratch`
@@ -215,6 +245,22 @@ export async function ensureDevHub(alias) {
   // NotADevHubError on an org that is one.
   run("sf", ["org", "list", "--json"], { quiet: true, capture: true });
   ok(`${c.bold(alias)} is a Dev Hub now.`);
+}
+
+/**
+ * True when the org answers the one query only a Dev Hub can, "timeout" when it
+ * does not answer at all.
+ */
+async function isDevHub(alias) {
+  const res = await runAsync(
+    "sf",
+    ["data", "query", "--query", "SELECT Id FROM ScratchOrgInfo LIMIT 1", "--target-org", alias, "--json"],
+    { timeoutMs: DEV_HUB_QUERY_TIMEOUT_MS }
+  );
+  if (res.timedOut) {
+    return "timeout";
+  }
+  return parseJsonOutput(res.stdout.trim())?.status === 0;
 }
 
 // ------------------------------------------------------------ scratch orgs
@@ -235,6 +281,7 @@ export async function ensureScratchOrgs(devHub, aliases) {
   const orgs = connectedOrgs();
   const hubUsername = (orgs.find((o) => (o.aliases || []).includes(devHub) || o.username === devHub) || {}).username;
   const usernames = {};
+  const kept = [];
   const missing = [];
   for (const alias of aliases) {
     const existing = orgs.find((o) => (o.aliases || []).includes(alias));
@@ -242,6 +289,7 @@ export async function ensureScratchOrgs(devHub, aliases) {
       (!existing.devHubUsername || !hubUsername || existing.devHubUsername === hubUsername);
     if (alive) {
       usernames[alias] = existing.username;
+      kept.push(existing.username);
       ok(`${c.bold(alias)} already exists${existing.expirationDate ? `, until ${existing.expirationDate}` : ""}.`);
     } else {
       if (existing) {
@@ -305,6 +353,9 @@ export async function ensureScratchOrgs(devHub, aliases) {
       warn(`${alias} could not be created: ${json?.message || (res.stderr || res.stdout).trim().split("\n").pop()}`);
     }
   }
+  // Before the stop below: an org this run created has the features of the definition, and the
+  // next run, which keeps it, must not take it for an older one
+  rememberShape(Object.values(usernames).filter((username) => !kept.includes(username)));
   if (failures.length > 0) {
     abort(
       `${failures.length} scratch org(s) could not be created.`,
@@ -312,6 +363,99 @@ export async function ensureScratchOrgs(devHub, aliases) {
     );
   }
   return usernames;
+}
+
+/**
+ * Switches off, in the scratch orgs created before the scratch definition did
+ * it, the Salesforce features a Developer Edition org does not have.
+ *
+ * A scratch org comes with Field Service and the Thanks badges on, and a
+ * Developer Edition org with both off. A Profile retrieved whole lists the page
+ * layout and the tab of every object of its org, those two features' included,
+ * so the Profile of Lab 2.6 could not be deployed to the two Developer Edition
+ * orgs of Level 3. The definition switches them off in a new scratch org; this
+ * does the same in one that already exists, once.
+ */
+export async function alignScratchOrgs(usernames) {
+  const shape = scratchShape();
+  const done = readProgress().scratchShapes || {};
+  const todo = Object.keys(usernames).filter((alias) => done[usernames[alias]] !== shape.id);
+  if (todo.length === 0) {
+    return;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "helios-shape-"));
+  fs.mkdirSync(path.join(dir, "settings"));
+  fs.writeFileSync(
+    path.join(dir, "package.xml"),
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<Package xmlns="http://soap.sforce.com/2006/04/metadata">',
+      "    <types>",
+      ...shape.settings.map((setting) => `        <members>${setting.name}</members>`),
+      "        <name>Settings</name>",
+      "    </types>",
+      "    <version>64.0</version>",
+      "</Package>",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  for (const setting of shape.settings) {
+    fs.writeFileSync(
+      path.join(dir, "settings", `${setting.name}.settings`),
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        `<${setting.name}Settings xmlns="http://soap.sforce.com/2006/04/metadata">`,
+        ...Object.entries(setting.values).map(([key, value]) => `    <${key}>${value}</${key}>`),
+        `</${setting.name}Settings>`,
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+  }
+  const results = await Promise.all(
+    todo.map(async (alias) => ({
+      alias,
+      res: await runAsync("sf", ["project", "deploy", "start", "--metadata-dir", dir, "--target-org", alias, "--wait", "10", "--json"])
+    }))
+  );
+  removeTempDir(dir);
+  const aligned = [];
+  for (const { alias, res } of results) {
+    if (res.code === 0) {
+      aligned.push(usernames[alias]);
+      ok(`${c.bold(alias)} has the same Salesforce features as a Developer Edition org.`);
+    } else {
+      // Not fatal: the org works, and only a Profile retrieved whole from it would show the difference
+      warn(`${alias} keeps Field Service and the Thanks badges on: ${parseJsonOutput(res.stdout)?.message || "the settings could not be deployed"}`);
+    }
+  }
+  rememberShape(aligned);
+}
+
+/** The feature settings of the scratch definition, and an id that changes when they do. */
+function scratchShape() {
+  const definition = JSON.parse(fs.readFileSync(path.join(ROOT, SCRATCH_DEF), "utf8"));
+  const settings = SHAPE_SETTINGS.filter((key) => definition.settings?.[key]).map((key) => ({
+    // fieldServiceSettings in the definition is the FieldService setting of the Metadata API
+    name: key.charAt(0).toUpperCase() + key.slice(1).replace(/Settings$/, ""),
+    values: definition.settings[key]
+  }));
+  return { settings, id: JSON.stringify(settings) };
+}
+
+/** Records the scratch orgs that have the features of the current definition. */
+function rememberShape(scratchUsernames) {
+  if (scratchUsernames.length === 0) {
+    return;
+  }
+  const progress = readProgress();
+  const { id } = scratchShape();
+  progress.scratchShapes = progress.scratchShapes || {};
+  scratchUsernames.forEach((username) => {
+    progress.scratchShapes[username] = id;
+  });
+  writeProgress(progress);
 }
 
 /** Deploys the app into every scratch org that has not had it yet, then its permissions and data. */
@@ -426,10 +570,40 @@ async function ensureFork(handle) {
     // No --default-branch-only: this course needs every branch, and that option
     // is the single most common way a learner ends up with a fork that cannot
     // work. The web form calls it "Copy the main branch only".
-    const res = run("gh", ["repo", "fork", UPSTREAM, "--clone=false", "--remote=false"]);
+    // No --remote either: gh refuses that flag (any value) once a repository is
+    // named, before it contacts GitHub. Named, it adds no remote anyway, and the
+    // remotes are set below.
+    // Captured, because the panel only shows what goes through info() and warn():
+    // what gh prints itself lands in an output channel nobody has open.
+    const res = run("gh", ["repo", "fork", UPSTREAM, "--clone=false"], { capture: true });
     if (res.code !== 0) {
-      abort("The fork could not be created.", "Fork it by hand on GitHub, then run this again.");
+      // Three lines and a link beat "fork it by hand": the web form has one box
+      // that has to be unticked, and a learner who misses it gets a fork the
+      // course cannot work in.
+      warn("The fork could not be created from here.");
+      // gh's own words first: a local error must not read as "GitHub refused it"
+      const said = (res.stderr || res.stdout).trim();
+      if (said) {
+        info("");
+        info("  The GitHub CLI said:");
+        for (const line of said.split(/\r?\n/)) {
+          info(`    ${line}`);
+        }
+      }
+      info("");
+      info("  When GitHub refuses it, the usual reasons are a repository of that name");
+      info("  already in your account, an organisation that does not allow forks, or a");
+      info("  sign-in without permission to create repositories.");
+      info("");
+      info("  Make it yourself, it is one screen:");
+      info(`    1. Open ${c.cyan(`https://github.com/${UPSTREAM}/fork`)}`);
+      info("    2. Leave the owner on your own account and the name as it is");
+      info(`    3. ${c.bold('Untick "Copy the main branch only"')}. The course needs every branch`);
+      info("    4. Click Create fork, and wait for the page to land on your copy");
+      info("");
+      abort("The fork could not be created.", "Make it as described above, then run this again.");
     }
+    ok(`Your fork is ${c.bold(fork)}.`);
   }
 
   // The clone was made from the shared repository, so origin still points there
@@ -458,6 +632,39 @@ async function ensureFork(handle) {
 }
 
 /**
+ * GitHub switches issues off on every new fork, and sfdx-hardis keeps the list of the development
+ * orgs (Lab 1.3 registers helios-dev in it) in an issue of the repository: without them, New User
+ * Story warns that it could not register the org. Never stops the setup.
+ */
+async function ensureIssues(slug) {
+  // A fork that was created a second ago can refuse the first read, as in ensureFork
+  let repo = ghJson(["api", `repos/${slug}`]);
+  for (let attempt = 0; !repo && attempt < 5; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    repo = ghJson(["api", `repos/${slug}`]);
+  }
+  if (!repo) {
+    warn(
+      `Could not read the settings of ${slug}, so issues may still be off there. ` +
+        "On GitHub: Settings > General > Features, tick Issues, or run Set up my training environment again."
+    );
+    return;
+  }
+  if (repo.has_issues) {
+    return;
+  }
+  const res = run("gh", ["repo", "edit", slug, "--enable-issues"], { capture: true, quiet: true });
+  if (res.code === 0) {
+    ok(`Issues switched on in ${c.bold(slug)}: sfdx-hardis keeps the list of your development orgs in one.`);
+  } else {
+    warn(
+      `Issues could not be switched on in ${slug}. ` +
+        "On GitHub: Settings > General > Features, tick Issues, or run Set up my training environment again."
+    );
+  }
+}
+
+/**
  * integration and uat, created from the state a Level 1 learner starts
  * from when the fork does not carry them yet. main exists in every fork.
  */
@@ -479,32 +686,121 @@ export function ensurePipelineBranches() {
 }
 
 // ------------------------------------------------------------- actions on
-function ensureActions(slug) {
+// The workflow files of the fork, read from its default branch, or null when
+// they cannot be read. One name per line rather than JSON: the contents API
+// answers with an array, and parseJsonOutput reads objects only.
+function workflowFiles(slug) {
+  const res = run("gh", ["api", `repos/${slug}/contents/.github/workflows`, "-q", ".[].name"], {
+    capture: true,
+    quiet: true
+  });
+  if (res.code !== 0) {
+    return null;
+  }
+  return res.stdout
+    .split(/\r?\n/)
+    .map((name) => name.trim())
+    .filter((name) => /\.ya?ml$/.test(name));
+}
+
+/**
+ * Every workflow of the fork that GitHub parked, put back to work.
+ *
+ * A fork arrives with Actions allowed and its workflows in `disabled_fork`,
+ * which is a different switch from the repository permission above. It has an
+ * API of its own: enable each parked workflow, then read them back.
+ *
+ * A brand new fork is one step earlier: it lists no workflow at all, because
+ * GitHub registers them only once the owner clicks the banner of the Actions
+ * tab, and that banner has no API. An empty list next to workflow files is that
+ * banner, not a fork with nothing left to enable: reading it as success is how
+ * the push of step 7 started no job at all.
+ *
+ * Returns { parked, banner }: the names still parked, empty when they all run,
+ * and whether the banner is what holds them. Returns null when GitHub could not
+ * be read, which says nothing either way.
+ */
+function enableForkWorkflows(slug) {
+  const listed = ghJson(["api", `repos/${slug}/actions/workflows`, "--paginate"]);
+  if (!Array.isArray(listed?.workflows)) {
+    return null;
+  }
+  const workflows = listed.workflows;
+  if (workflows.length === 0) {
+    const files = workflowFiles(slug);
+    return files === null ? null : { parked: files, banner: files.length > 0 };
+  }
+  for (const workflow of workflows) {
+    if (workflow.state === "active") {
+      continue;
+    }
+    run("gh", ["api", "-X", "PUT", `repos/${slug}/actions/workflows/${workflow.id}/enable`], {
+      capture: true,
+      quiet: true
+    });
+  }
+  const after = ghJson(["api", `repos/${slug}/actions/workflows`, "--paginate"]);
+  // A read that fails says nothing either way, and claiming success on it is
+  // how a learner ends up with a Pull Request nothing ever checks
+  const read = Array.isArray(after?.workflows) ? after.workflows : workflows;
+  const parked = read.filter((workflow) => workflow.state !== "active").map((workflow) => workflow.name);
+  return { parked, banner: false };
+}
+
+async function ensureActions(slug, { wait = true } = {}) {
   step(2, "Actions turned on");
 
   const permissions = ghJson(["api", `repos/${slug}/actions/permissions`]);
-  if (permissions?.enabled === true) {
-    ok("Actions are on.");
+  if (permissions?.enabled !== true) {
+    run("gh", [
+      "api", "-X", "PUT", `repos/${slug}/actions/permissions`,
+      "-F", "enabled=true", "-f", "allowed_actions=all"
+    ], { capture: true, quiet: true });
+  }
+
+  const enabled = ghJson(["api", `repos/${slug}/actions/permissions`])?.enabled === true;
+  let state = enabled ? enableForkWorkflows(slug) : null;
+
+  // The banner has no API: the learner clicks it, and this waits for that
+  // click. Now rather than at the end, because step 7 pushes to integration and
+  // that push only starts its deployment job once the workflows run. Only for
+  // the banner: a workflow GitHub refused to enable has no banner to click.
+  if (wait && state?.banner) {
+    const url = `https://github.com/${slug}/actions`;
+    info("    GitHub keeps the workflows of a new fork switched off until you say otherwise.");
+    info(`    Your browser opens ${c.cyan(url)}: click`);
+    info(`    ${c.bold("I understand my workflows, go ahead and enable them")}, then come back here.`);
+    openUrl(url);
+    info(c.dim(`    Waiting for that click, up to ${ACTIONS_WAIT_MINUTES} minutes...`));
+    const until = Date.now() + ACTIONS_WAIT_MINUTES * 60 * 1000;
+    while (state?.parked.length !== 0 && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      // A read that fails, a network blip or a rate limit, keeps what was known
+      state = enableForkWorkflows(slug) || state;
+    }
+  }
+
+  const parked = state?.parked || [];
+  if (enabled && state && parked.length === 0) {
+    ok("Actions are on, and every workflow of your fork runs.");
     return true;
   }
 
-  const res = run("gh", [
-    "api", "-X", "PUT", `repos/${slug}/actions/permissions`,
-    "-F", "enabled=true", "-f", "allowed_actions=all"
-  ], { capture: true, quiet: true });
-
-  const after = ghJson(["api", `repos/${slug}/actions/permissions`]);
-  if (res.code === 0 && after?.enabled === true) {
-    ok("Actions are on.");
-    return true;
-  }
-
-  // GitHub disables workflows on a new fork behind a banner that has no API.
-  // Saying so is better than reporting a success nobody can verify.
-  warn("Actions could not be turned on from here.");
-  info(`    Open https://github.com/${slug}/actions and click`);
+  // Two different switches, and the second one is the one a learner meets as an
+  // empty Checks tab on a Pull Request that looks perfectly fine.
+  warn(
+    !enabled
+      ? "Actions could not be turned on from here."
+      : state
+        ? `Actions are on, but ${parked.length} workflow(s) are still parked: ${parked.join(", ")}.`
+        : "Actions are on, but GitHub did not say whether the workflows of your fork run."
+  );
+  info(`    Open ${c.cyan(`https://github.com/${slug}/actions`)} and click`);
   info(`    ${c.bold("I understand my workflows, go ahead and enable them")}.`);
-  info("    It is one click, and then this command has nothing left to do.");
+  info("    It is one click. Then run this command again, which checks that they run.");
+  info("");
+  info("    If a Pull Request is already open, its checks will not start on their own");
+  info(`    afterwards. Run ${c.bold("Training > Trigger my workflows")} once and they will.`);
   return false;
 }
 
@@ -664,7 +960,7 @@ export function setSecrets(slug, pipeline) {
     ok(`${secret} is set on ${c.bold(slug)}.`);
   }
   info(c.dim("    Each holds a long-lived refresh token for a throwaway scratch org."));
-  info(c.dim("    Lab 3.1 replaces them with JWT certificates and deletes them."));
+  info(c.dim("    Lab 3.1 uses JWT certificates for preprod and main, and leaves these two as they are."));
 }
 
 // --------------------------------------------------------------------- main
@@ -682,7 +978,18 @@ export default async function init(args) {
   info(c.dim("already there, and nobody asks a new contributor to build them on their first day."));
   info("");
 
-  await ensureGh();
+  const signedInNow = await ensureGh();
+  // Before anything reads the account: the fork, and the name of the commits.
+  // Only while there is no fork yet: once origin is the fork, it is in the
+  // account it is in, and asking again would only make a learner doubt it.
+  const slugBefore = repoSlug();
+  const forkMade = slugBefore && slugBefore.toLowerCase() !== UPSTREAM.toLowerCase();
+  if (!forkMade && !signedInNow) {
+    if (!(await confirmGhAccount(args.account, { assumeYes: args.yes === true }))) {
+      info("Nothing was changed. Click Set up my training environment again when you know which account to use.");
+      return;
+    }
+  }
   const handle = currentHandle();
   if (!handle) {
     abort("Could not read your GitHub account.", "Click Set up my training environment again.");
@@ -699,19 +1006,27 @@ export default async function init(args) {
   }
   const devHub = await findDevHub(orgs, args.org);
 
+  info(c.dim(`    Your user in ${devHub} will work in English from now on, like the scratch orgs and the labs.`));
   if (!args.yes && !(await confirm(`Build your training environment from ${devHub}?`, true))) {
     info("Nothing was changed.");
     return;
   }
 
   const slug = await ensureFork(handle);
-  const actionsOn = ensureActions(slug);
+  await ensureIssues(slug);
+  // --no-actions-wait: for automation with no browser, where nobody can click the banner
+  const actionsOn = await ensureActions(slug, { wait: args["no-actions-wait"] !== true });
 
   step(3, "Your Dev Hub");
   await ensureDevHub(devHub);
+  // Before the scratch orgs, which are all created in English: see workInEnglish.
+  if (!workInEnglish(devHub)) {
+    warn(`The language of your user in ${devHub} could not be set to English. Set it yourself: your picture, top right > Settings > Language & Time Zone.`);
+  }
 
   step(4, "Your three scratch orgs");
   const usernames = await ensureScratchOrgs(devHub, scratch.map((o) => o.alias));
+  await alignScratchOrgs(usernames);
   pointProjectAt(devHub, devAlias);
 
   step(5, "The Helios app in each of them");
@@ -721,8 +1036,10 @@ export default async function init(args) {
   // job of integration straight away: written after, the job runs with no
   // credential and the learner's pipeline is red before Lab 1.3.
   step(6, "The credentials the CI jobs use");
-  // Once Lab 3.1 moved the pipeline to JWT and deleted the auth URL secrets, running
-  // this again, to rebuild an expired scratch org, must not bring the shortcut back
+  // Lab 3.1 moves only preprod and main to JWT, and integration and uat keep these
+  // secrets: running this again, to rebuild an expired scratch org, writes them
+  // again. A fork that walked the earlier Lab 3.1 moved all four branches to JWT
+  // (encryptedCert) and deleted the secrets, and must not get the shortcut back.
   const projectConfig = gitOut(["show", `origin/${pipeline[0].branch}:config/.sfdx-hardis.yml`]);
   if (/^orgAuthenticationMode:[ \t]*["']?encryptedCert/m.test(projectConfig)) {
     ok("The pipeline logs in with JWT keys since Lab 3.1: no auth URL secret is written.");
@@ -738,6 +1055,11 @@ export default async function init(args) {
   step(8, "Changes through a Pull Request, merged once green");
   info(c.dim(`    A Pull Request into ${pipeline.map((s) => s.branch).join(" or ")} merges only once ${REQUIRED_CHECKS.join(" and ")} are green.`));
   const protectedBranches = protectBranches(slug, pipeline.map((s) => s.branch));
+  // Only once the major branches are protected: that is what keeps them when a
+  // promotion, whose source is a major branch, is merged.
+  if (protectedBranches) {
+    deleteMergedBranches(slug, pipeline.map((s) => s.branch));
+  }
 
   title("Done");
   info(`Your fork:               https://github.com/${slug}`);

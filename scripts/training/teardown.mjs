@@ -10,20 +10,37 @@ import os from "os";
 import path from "path";
 import {
   ROOT, c, title, info, ok, warn, abort, run, select, confirm,
-  connectedOrgs, orgChoices, universe
+  connectedOrgs, orgChoices, universe, parseJsonOutput, removeTempDir
 } from "../lib/util.mjs";
 
+// Everything the course puts in an org, across all three levels. A name that is
+// not in the org is not an error: a destructive deploy ignores it. A name that
+// is missing from here is, because whatever it is holds Installation__c and the
+// object can then never be deleted. The Level 2 classes and objects were the
+// ones missing, and they are why this command used to fail on any org that had
+// got past Level 1.
 const REMOVE = [
   ["CustomApplication", ["Helios_Delivery"]],
-  ["CustomTab", ["Installation__c", "Panel_Batch__c"]],
+  ["CustomTab", ["Installation__c", "Panel_Batch__c", "Crew_Capacity__c", "Handover_Item__c"]],
   ["FlexiPage", ["Installation_Record_Page"]],
   ["Flow", ["Installation_Assign_Crew", "Installation_Close_Check", "Installation_Crew_Warning"]],
   ["LightningComponentBundle", ["installationTimeline"]],
-  ["ApexClass", ["InstallationSchedulerTest", "InstallationScheduler"]],
+  [
+    "ApexClass",
+    [
+      "InstallationSchedulerTest",
+      "InstallationScheduler",
+      "CrewCapacityBatchTest",
+      "CrewCapacityBatch",
+      "CrewSizeBackfillBatchTest",
+      "CrewSizeBackfillBatch"
+    ]
+  ],
+  ["Group", ["Helios_Crew_Leads"]],
   ["PermissionSet", ["Helios_Delivery_Crew", "Helios_Delivery_Manager"]],
   ["Profile", ["Helios Crew"]],
   ["RemoteSiteSetting", ["Helios_Warehouse"]],
-  ["CustomObject", ["Panel_Batch__c", "Installation__c"]]
+  ["CustomObject", ["Panel_Batch__c", "Handover_Item__c", "Crew_Capacity__c", "Installation__c"]]
 ];
 
 // The seeded accounts are found by name, read from the seed file itself.
@@ -50,6 +67,272 @@ System.debug('Removed ' + opportunities.size() + ' opportunities, ' + contacts.s
 `;
 }
 
+/**
+ * A destructive deploy cannot unassign a permission set, deactivate a Flow or
+ * deactivate a Lightning page, and the Helios app needs all three let go of
+ * before any of it can be deleted. Without this step the deploy below always
+ * fails on an org that was actually used, which is every org this command is
+ * ever pointed at:
+ *
+ *   PermissionSet Helios_Delivery_Manager   assigned to one or more users
+ *   Flow Installation_*                     insufficient access rights (active)
+ *   FlexiPage Installation_Record_Page      you can't delete an active Lightning page
+ *   CustomObject Installation__c            used by another feature: Flow Version
+ *   LightningComponentBundle installationTimeline  referenced by the Lightning page
+ *
+ * The last two go on their own once the first three are dealt with. Every call
+ * here is allowed to fail: an org that never had the thing is not a problem.
+ */
+function releaseHolds(target) {
+  // The permission sets, unassigned from whoever holds them
+  const apexFile = path.join(os.tmpdir(), `helios-unassign-${Date.now()}.apex`);
+  fs.writeFileSync(
+    apexFile,
+    `List<PermissionSetAssignment> psa = [
+  SELECT Id FROM PermissionSetAssignment
+  WHERE PermissionSet.Name IN ('Helios_Delivery_Crew','Helios_Delivery_Manager')
+];
+delete psa;
+System.debug('Unassigned ' + psa.size() + ' permission set assignment(s)');
+`,
+    "utf8"
+  );
+  const unassigned = runSf(["apex", "run", "--file", apexFile, "--target-org", target], { quiet: true });
+  removeTempDir(apexFile);
+  reportStep(unassigned, "  Permission sets unassigned", "unassign the permission sets");
+
+  // The scheduled jobs. Lab 2.4 schedules CrewCapacityBatch nightly, and a
+  // scheduled job holds its class, which holds both custom objects. Salesforce
+  // reports it as "This apex class is referenced elsewhere in Salesforce ... :
+  // Scheduled Jobs", which names no job you can find without looking.
+  const jobsFile = path.join(os.tmpdir(), `helios-unschedule-${Date.now()}.apex`);
+  fs.writeFileSync(
+    jobsFile,
+    `List<CronTrigger> jobs = [
+  SELECT Id FROM CronTrigger
+  WHERE CronJobDetail.Name LIKE 'Helios%' OR CronJobDetail.Name LIKE '%Crew%'
+];
+for (CronTrigger job : jobs) { System.abortJob(job.Id); }
+System.debug('Aborted ' + jobs.size() + ' scheduled job(s)');
+`,
+    "utf8"
+  );
+  const unscheduled = runSf(["apex", "run", "--file", jobsFile, "--target-org", target], { quiet: true });
+  removeTempDir(jobsFile);
+
+  // The public group of Lab 3.3. The lab is built on its absence: the first
+  // action of US-062 fails because the org has no Crew Leads group, and the
+  // learner creates it by hand. A group left by an earlier walk makes that
+  // action pass, and the lab then describes a failure nobody sees.
+  const groupFile = path.join(os.tmpdir(), `helios-group-${Date.now()}.apex`);
+  fs.writeFileSync(
+    groupFile,
+    `List<Group> groups = [SELECT Id FROM Group WHERE DeveloperName = 'Helios_Crew_Leads'];
+delete groups;
+System.debug('Deleted ' + groups.size() + ' public group(s)');
+`,
+    "utf8"
+  );
+  const ungrouped = runSf(["apex", "run", "--file", groupFile, "--target-org", target], { quiet: true });
+  removeTempDir(groupFile);
+  reportStep(ungrouped, "  Crew Leads public group removed, when there was one", "remove the Crew Leads public group");
+  reportStep(unscheduled, "  Scheduled jobs aborted", "abort the scheduled jobs");
+
+  // The flows, deactivated. An active flow refuses to be deleted, and says so
+  // with "insufficient access rights on cross-reference id", which reads like a
+  // permission problem and is not one.
+  let deactivated = 0;
+  const stillActive = [];
+  for (const flow of ["Installation_Assign_Crew", "Installation_Close_Check", "Installation_Crew_Warning"]) {
+    const found = runSf(["data", "query", "--use-tooling-api", "-q", `SELECT Id FROM FlowDefinition WHERE DeveloperName = '${flow}'`,
+        "--target-org", target, "--json"],
+      { capture: true, quiet: true }
+    );
+    if (found.code !== 0) {
+      stillActive.push(`${flow} (could not be read: ${firstError(found)})`);
+      continue;
+    }
+    let id = null;
+    try {
+      id = JSON.parse(found.stdout).result.records[0].Id;
+    } catch {
+      // Not in this org: nothing to deactivate
+      continue;
+    }
+    const off = runSf(["api", "request", "rest", `services/data/v64.0/tooling/sobjects/FlowDefinition/${id}`,
+        "--method", "PATCH", "--body", '{"Metadata":{"activeVersionNumber":null}}', "--target-org", target],
+      { quiet: true }
+    );
+    if (off.code === 0) {
+      deactivated++;
+    } else {
+      stillActive.push(`${flow} (${firstError(off)})`);
+    }
+  }
+  info(deactivated > 0 ? `  ${deactivated} flow(s) deactivated` : c.dim("  No active flow to deactivate"));
+  if (stillActive.length > 0) {
+    // Said here rather than left to the destructive deploy, which reports an active flow as
+    // "insufficient access rights on cross-reference id" and the objects as "used by another feature"
+    warn(`  Could not deactivate ${stillActive.join(", ")}`);
+  }
+
+  // The flow versions, deleted one by one. A deactivated flow with more than
+  // one version still refuses the destructive deploy with the same "insufficient
+  // access rights on cross-reference id", and each old version holds the objects
+  // ("used by another feature: Flow Version"). Level 2 updates two of these flows
+  // and every walk adds a version, so an org used once is already in that state.
+  // Deleting the last version deletes the flow itself.
+  const versions = runSf(["data", "query", "--use-tooling-api", "-q",
+      "SELECT Id FROM Flow WHERE Definition.DeveloperName IN ('Installation_Assign_Crew','Installation_Close_Check','Installation_Crew_Warning')",
+      "--target-org", target, "--json"],
+    { capture: true, quiet: true }
+  );
+  let versionIds = [];
+  if (versions.code !== 0) {
+    warn(`  Could not list the flow versions: ${firstError(versions)}`);
+  }
+  try {
+    versionIds = (parseJsonOutput(versions.stdout)?.result?.records || []).map((r) => r.Id);
+  } catch {
+    versionIds = [];
+  }
+  let deleted = 0;
+  let notDeleted = 0;
+  for (const id of versionIds) {
+    const gone = runSf(["data", "delete", "record", "--use-tooling-api", "--sobject", "Flow", "--record-id", id, "--target-org", target],
+      { quiet: true }
+    );
+    if (gone.code === 0) {
+      deleted++;
+    } else {
+      notDeleted++;
+    }
+  }
+  info(deleted > 0 ? `  ${deleted} flow version(s) deleted` : c.dim("  No flow version to delete"));
+  if (notDeleted > 0) {
+    warn(`  ${notDeleted} flow version(s) could not be deleted: an active version refuses it, run this again`);
+  }
+
+  // The record page, put back to the standard one. A Lightning page assigned as
+  // an object's record page is "active", and an active page cannot be deleted.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "helios-deactivate-"));
+  fs.mkdirSync(path.join(dir, "objects"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "package.xml"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types><members>Installation__c</members><name>CustomObject</name></types>
+    <version>64.0</version>
+</Package>
+`,
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "objects", "Installation__c.object"),
+    // A CustomObject deploy is refused without these, even when the only thing
+    // being changed is the action override: "Must specify a non-empty label".
+    `<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <actionOverrides>
+        <actionName>View</actionName>
+        <type>Default</type>
+    </actionOverrides>
+    <actionOverrides>
+        <actionName>View</actionName>
+        <formFactor>Large</formFactor>
+        <type>Default</type>
+    </actionOverrides>
+    <actionOverrides>
+        <actionName>View</actionName>
+        <formFactor>Small</formFactor>
+        <type>Default</type>
+    </actionOverrides>
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>Installation</label>
+    <nameField>
+        <displayFormat>INST-{00000}</displayFormat>
+        <label>Installation Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>Installations</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+</CustomObject>
+`,
+    "utf8"
+  );
+  const page = run("sf", ["project", "deploy", "start", "--metadata-dir", dir, "--target-org", target,
+      "--test-level", "NoTestRun", "--ignore-warnings", "--wait", "30"],
+    { quiet: true }
+  );
+  removeTempDir(dir);
+  reportStep(page, "  The Installation record page is back to the standard one", "put the Installation record page back to the standard one");
+}
+
+/**
+ * The External Client Apps Lab 3.1 deploys, one per branch it moves to JWT
+ * (preprod and main, all four in the earlier version of the lab), named
+ * sfdxhardis<branch>. They hold nothing of the app, but they outlive it: the
+ * next Add or Reconnect a Major Org on the same org stops on "External Client App named
+ * sfdxhardisintegration already exists ... Have you deleted it?", which is every
+ * learner who walks Level 3 twice on the same orgs. The app and its four
+ * settings records go in one destructive deploy. Allowed to fail, like the rest.
+ */
+// Only the names the course creates: Add or Reconnect a Major Org names its app sfdxhardis<branch>,
+// Install Org Monitoring sfdxhardismon_<org>, and the settings records start with the
+// app name. Every sfdx-hardis project names its apps the same way, so matching any
+// sfdxhardis* app would also take another project's app off the learner's own Dev Hub.
+const COURSE_APP_NAME = /^sfdxhardis(integration|uat|preprod|main|mon_)/i;
+
+const APP_CLIENT_TYPES = [
+  "ExtlClntAppOauthConfigurablePolicies",
+  "ExtlClntAppConfigurablePolicies",
+  "ExtlClntAppOauthSettings",
+  "ExtlClntAppGlobalOauthSettings",
+  "ExternalClientApplication"
+];
+
+function removeCourseAppClients(target) {
+  const found = [];
+  for (const type of APP_CLIENT_TYPES) {
+    const listed = runSf(["org", "list", "metadata", "-m", type, "--target-org", target, "--json"], {
+      capture: true,
+      quiet: true
+    });
+    if (listed.code !== 0) {
+      warn(`  Could not list the ${type} of the org: ${firstError(listed)}`);
+    }
+    let names = [];
+    try {
+      names = (parseJsonOutput(listed.stdout)?.result || []).map((r) => r.fullName).filter((n) => COURSE_APP_NAME.test(n));
+    } catch {
+      names = [];
+    }
+    if (names.length > 0) {
+      found.push([type, names]);
+    }
+  }
+  if (!found.some(([type]) => type === "ExternalClientApplication")) {
+    info(c.dim("  No External Client App of the course to remove"));
+    return;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "helios-apps-"));
+  const pkg = (types) =>
+    `<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+${types.map(([type, names]) => `    <types>\n${names.map((n) => `        <members>${n}</members>\n`).join("")}        <name>${type}</name>\n    </types>\n`).join("")}    <version>64.0</version>
+</Package>
+`;
+  fs.writeFileSync(path.join(dir, "package.xml"), pkg([]), "utf8");
+  fs.writeFileSync(path.join(dir, "destructiveChangesPost.xml"), pkg(found), "utf8");
+  const gone = run("sf", ["project", "deploy", "start", "--metadata-dir", dir, "--target-org", target,
+      "--test-level", "NoTestRun", "--ignore-warnings", "--wait", "30"],
+    { quiet: true }
+  );
+  removeTempDir(dir);
+  const apps = found.find(([type]) => type === "ExternalClientApplication")[1];
+  reportStep(gone, `  External Client App(s) removed: ${apps.join(", ")}`, `remove the External Client Apps ${apps.join(", ")}`);
+}
+
 export default async function teardown(args) {
   title("Clean up a training org");
 
@@ -72,7 +355,7 @@ export default async function teardown(args) {
       `Connect one of them in the Orgs Manager panel first: ${known.join(", ")}`
     );
   }
-  const target = await select("Which org do you want to clean up?", orgChoices(suggested), args.org);
+  const target = await select("Which org do you want to clean up?", orgChoices(suggested), args.org, "org");
 
   info("");
   warn(`This deletes the Helios Delivery app and every record it created in ${c.bold(target)}.`);
@@ -83,30 +366,54 @@ export default async function teardown(args) {
     return;
   }
 
-  title("1 of 2  Deleting the accounts, contacts and opportunities");
+  title("1 of 3  Deleting the accounts, contacts and opportunities");
   const apexFile = path.join(os.tmpdir(), `helios-teardown-${Date.now()}.apex`);
   fs.writeFileSync(apexFile, deleteStandardApex(), "utf8");
   const apex = run("sf", ["apex", "run", "--file", apexFile, "--target-org", target]);
-  fs.rmSync(apexFile, { force: true });
+  removeTempDir(apexFile);
   if (apex.code !== 0) {
     warn("The records could not all be deleted. The metadata removal below still runs.");
   } else {
     ok("Standard records are gone");
   }
 
-  title("2 of 2  Removing the Helios metadata");
+  title("2 of 3  Letting go of what holds the metadata");
+  releaseHolds(target);
+  removeCourseAppClients(target);
+
+  title("3 of 3  Removing the Helios metadata");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "helios-destroy-"));
   fs.writeFileSync(path.join(dir, "package.xml"), emptyPackage(), "utf8");
   fs.writeFileSync(path.join(dir, "destructiveChangesPost.xml"), destructivePackage(), "utf8");
-  const deploy = run("sf", [
-    "project", "deploy", "start",
-    "--metadata-dir", dir,
-    "--target-org", target,
-    "--test-level", "NoTestRun",
-    "--ignore-warnings",
-    "--wait", "60"
-  ]);
-  fs.rmSync(dir, { recursive: true, force: true });
+  // Twice, because one destructive deploy is one pass: the Lightning page cannot
+  // go while the app that carries it is still there, and the object cannot go
+  // while the page does. The first pass takes the app, the tabs and the classes,
+  // the second takes what they were holding. A second pass on an org that is
+  // already empty deletes nothing and succeeds, so it costs a minute at worst.
+  let deploy = { code: 1 };
+  for (let pass = 1; pass <= 2; pass++) {
+    deploy = run("sf", [
+      "project", "deploy", "start",
+      "--metadata-dir", dir,
+      "--target-org", target,
+      "--test-level", "NoTestRun",
+      "--ignore-warnings",
+      // Erased, not sent to Setup > Deleted Objects. A deleted object keeps its
+      // lookups for 15 days, and the Installation__c.Account__c of a deleted
+      // Installation still owns the "Installations" relationship name on Account:
+      // the next seed of the same org then fails on it. Scratch and Developer
+      // Edition orgs both accept this.
+      "--purge-on-delete",
+      "--wait", "60"
+    ]);
+    if (deploy.code === 0) {
+      break;
+    }
+    if (pass === 1) {
+      info(c.dim("  Some of it was still held. Second pass, now that what held it is gone..."));
+    }
+  }
+  removeTempDir(dir);
   if (deploy.code !== 0) {
     abort(
       `The metadata could not be removed from ${target}.`,
@@ -139,4 +446,56 @@ ${types}
     <version>64.0</version>
 </Package>
 `;
+}
+
+/**
+ * An sf call of a cleanup step, with its output captured.
+ *
+ * The CLI checks the DNS of a scratch org's domain before each command, and that
+ * check fails now and then for a few seconds ("DomainNotFoundError: Parsing
+ * --target-org ... The org cannot be found"). A cleanup step then failed without a
+ * word: two flows stayed active, and the destructive deploy that follows refused
+ * the flow versions and the objects they use. That failure is retried.
+ *
+ * For the short calls only: the deploys of this file stream their output instead,
+ * because they can run for minutes and a captured call shows nothing meanwhile.
+ */
+function runSf(args, options = {}) {
+  let res = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    res = run("sf", args, { ...options, capture: true });
+    if (res.code === 0 || !TRANSIENT_DNS_ERROR.test(`${res.stdout}\n${res.stderr}`)) {
+      return res;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+  }
+  return res;
+}
+
+// Only the DNS check of the CLI, which fails before any request reaches the org: a call retried on it
+// has done nothing yet. A network error later on (ENOTFOUND while polling) could re-run a call that
+// already worked, so it is reported rather than retried.
+const TRANSIENT_DNS_ERROR = /DomainNotFoundError/;
+
+/**
+ * Says what a cleanup step did. A failure is reported as a failure: these steps
+ * used to print "nothing to remove" whenever their command failed, which hid
+ * the reason the destructive deploy failed next.
+ */
+function reportStep(res, doneMessage, what) {
+  if (res.code === 0) {
+    info(doneMessage);
+  } else {
+    warn(`  Could not ${what}: ${firstError(res)}`);
+  }
+}
+
+/** The first line of a failed sf call worth showing, without its colours. */
+function firstError(res) {
+  const lines = `${res.stderr}\n${res.stdout}`
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return lines.find((line) => /error|failed|cannot|invalid/i.test(line)) || lines[0] || `exit code ${res.code}, see the output above`;
 }

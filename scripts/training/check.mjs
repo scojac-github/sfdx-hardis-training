@@ -21,7 +21,12 @@ export default async function check(args) {
 
   const levelDef = levels.find((l) => l.level === level);
   const labChoices = [
-    { value: "all", label: `Everything in level ${level}  ${c.dim("(what the badge claim checks)")}` },
+    // Named after the capstone too: the last lab of a level is the capstone, and
+    // a learner who has just finished it looks for it by name in this list
+    {
+      value: "all",
+      label: `Everything in level ${level}, capstone included  ${c.dim("(what the badge claim checks)")}`
+    },
     // Only the labs that have something to check: Lab 1.1 installs tools, and has no rule
     ...levelDef.labs
       .filter((l) => RULES.some((rule) => rule.level === level && rule.lab === l.lab))
@@ -29,7 +34,7 @@ export default async function check(args) {
   ];
   // "--lab 1.4" and "--lab 4" both name Lab 1.4
   const preselected = args.lab === undefined ? undefined : String(args.lab).split(".").pop();
-  const lab = await select("Which lab?", labChoices, preselected);
+  const lab = await select("Which lab?", labChoices, preselected, "lab");
 
   info("");
   await runCheck({ level: String(level), lab: lab === "all" ? undefined : lab });

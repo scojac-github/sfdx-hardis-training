@@ -30,13 +30,16 @@ permissions: read-all
 jobs:
   translations:
     name: Staleness, alignment and shape
+    # It checks the course, not a learner's work: Set up my training environment
+    # switches on every workflow of a learner's fork, so it must not run there
+    if: github.repository == 'hardisgroupcom/sfdx-hardis-training'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-          # source_rev names a commit, and comparing it with the history of the
-          # English file needs that history
+          # a source_rev stamped before it became a content hash names a commit, and
+          # comparing it with the history of the English file needs that history
           fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -55,6 +58,28 @@ jobs:
 
       - name: Every table's pipes line up
         run: node scripts/i18n/align-tables.mjs --check
+
+      # A command named in an Under the hood block without a link to its page is
+      # a dead end for the one reader who wanted the flags. Caught here rather
+      # than on main, because the publish is too late to notice it.
+      - name: Every Under the hood block links the commands it names
+        run: node scripts/build/lab-command-links.mjs --check
+
+      # The same for a lab named without a link. pages.yml runs this check before
+      # it publishes, so a Pull Request that lets one through merges green and
+      # then stops the site from publishing at all: on 2026-09-25 two merges in a
+      # row never reached the learners.
+      - name: Every mention of another lab is a link
+        run: node scripts/build/lab-crossrefs.mjs --check
+
+      - name: The generated files match what the sources say
+        run: node scripts/build/universe.mjs --check
+
+      # Every numbered step of every lab, in every locale: a Goal line, a "You
+      # should now see" block last, only Careful boxes, titled code blocks, and
+      # bold kept for what a screen shows. See scripts/lib/lab-template.mjs.
+      - name: Every lab follows the step template
+        run: node scripts/verify/check-lab-template.mjs
 
       # Reports, never fails: a deliberate difference is allowed, and the French
       # home page has one. It is here to be read on the Pull Request, because a

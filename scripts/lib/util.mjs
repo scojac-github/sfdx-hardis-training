@@ -107,6 +107,8 @@ export function run(command, args, options = {}) {
     stdio: options.capture ? "pipe" : "inherit",
     shell: WINDOWS,
     encoding: "utf8",
+    // What the command reads on stdin, for a text too long for a command line
+    ...(options.input !== undefined ? { input: options.input } : {}),
     env: { ...process.env, ...(options.env || {}) }
   });
   return {
@@ -123,6 +125,13 @@ export function run(command, args, options = {}) {
  * orgs: running them one after the other would triple a wait that is already
  * the longest part of the setup. Output is captured rather than streamed,
  * because three commands writing to one terminal at once is unreadable.
+ *
+ * It is also the one to use before a long wait the panel has to show: run()
+ * blocks this process, so nothing else, not even a "still waiting" line, can
+ * happen until the child ends.
+ *
+ * `timeoutMs` stops the child and everything it started once that time is up,
+ * and resolves with `timedOut: true`.
  */
 export function runAsync(command, args, options = {}) {
   const spawnCommand = WINDOWS ? [quoteArg(command), ...args.map(quoteArg)].join(" ") : command;
@@ -135,11 +144,34 @@ export function runAsync(command, args, options = {}) {
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const timer = options.timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          killTree(child);
+        }, options.timeoutMs)
+      : null;
+    const done = (result) => {
+      clearTimeout(timer);
+      resolve(timedOut ? { ...result, code: 1, timedOut: true } : result);
+    };
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", (error) => resolve({ code: 1, stdout, stderr: stderr + error.message }));
-    child.on("close", (code) => resolve({ code: code === null ? 1 : code, stdout, stderr }));
+    child.on("error", (error) => done({ code: 1, stdout, stderr: stderr + error.message }));
+    child.on("close", (code) => done({ code: code === null ? 1 : code, stdout, stderr }));
   });
+}
+
+/**
+ * Stops a child and what it started. On Windows the child is the shell that
+ * runs the .cmd shim, and killing only the shell leaves the CLI running.
+ */
+function killTree(child) {
+  if (WINDOWS) {
+    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+  } else {
+    child.kill("SIGTERM");
+  }
 }
 
 /**
@@ -227,6 +259,22 @@ export function gitOut(args) {
   return run("git", args, { capture: true, quiet: true }).stdout.trim();
 }
 
+/**
+ * Removes a temporary folder a command wrote for one sf call. On Windows the sf
+ * process can still hold a file of it for a moment after it exits, and the
+ * removal then fails with EPERM: it is tried again briefly, and a folder that
+ * stays is left to the system temp cleanup rather than failing the command that
+ * already did its work. The same goes for a temporary file.
+ */
+export function removeTempDir(dir) {
+  try {
+    // rmSync waits synchronously between attempts: keep the budget under a second
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 });
+  } catch (e) {
+    info(c.dim(`  Left in the temp folder, still in use: ${dir} (${e.code || e.message})`));
+  }
+}
+
 // ------------------------------------------------------------------ prompts
 /** The learner dismissed the question in the panel: stop where the CLI stops. */
 function cancelled(message) {
@@ -283,7 +331,7 @@ async function ask(question) {
  * Numbered list selection. Plain readline, so it works in the VS Code terminal,
  * in Git Bash, in PowerShell and over SSH without a prompt library.
  */
-export async function select(message, choices, preselected) {
+export async function select(message, choices, preselected, flag) {
   const knownValues = () => [...new Set(choices.flatMap((ch) => [ch.value, ...(ch.aliases || [])]))];
   if (preselected) {
     // An org answers to several names: its aliases and its username. Match any of
@@ -306,10 +354,15 @@ export async function select(message, choices, preselected) {
       abortPanelGone(message);
     }
     // Naming the answers this very question accepts, rather than an example
-    // from another command that does not apply here
+    // from another command that does not apply here. And naming the flag: a list
+    // of values nobody can pass is a loop, not an error message.
+    const values = knownValues().join(", ");
     abort(
       `${message} needs an answer, and this terminal cannot ask for one.`,
-      `Pass one of these on the command line instead: ${knownValues().join(", ")}`
+      flag
+        ? `Pass it on the command line instead:  --${flag} <value>
+    Values: ${values}`
+        : `Pass one of these on the command line instead: ${values}`
     );
   }
   if (panel.isActive()) {
@@ -514,12 +567,36 @@ export function writeProgress(progress) {
   fs.writeFileSync(path.join(ROOT, PROGRESS_FILE), JSON.stringify(progress, null, 2) + "\n", "utf8");
 }
 
+/**
+ * When a lab passed for the first time, or null when it never did.
+ *
+ * The receipt of a lab keeps that moment. Check my work runs over the whole
+ * level, and Claim my badge does too, so a receipt stamped at every run said
+ * when the claim was made and nothing about the lab.
+ */
+export function firstPassedAt(id) {
+  const receipt = (readProgress().receipts || []).find((r) => r.id === id);
+  const at = receipt ? receipt.firstPassedAt || receipt.at : null;
+  return at && !Number.isNaN(Date.parse(at)) ? at : null;
+}
+
 export function recordReceipt(receipt) {
   const progress = readProgress();
+  const previous = (progress.receipts || []).find((r) => r.id === receipt.id);
   progress.receipts = (progress.receipts || []).filter((r) => r.id !== receipt.id);
-  progress.receipts.push(receipt);
+  progress.receipts.push({ ...receipt, firstPassedAt: (previous && (previous.firstPassedAt || previous.at)) || receipt.at });
   progress.receipts.sort((a, b) => a.id.localeCompare(b.id));
   writeProgress(progress);
+}
+
+/** Forgets the receipts of a level and of the ones after it: Reset this level starts them over. */
+export function clearReceipts(fromLevel) {
+  const progress = readProgress();
+  const kept = (progress.receipts || []).filter((r) => Number(String(r.id).split(".")[0]) < fromLevel);
+  if (kept.length !== (progress.receipts || []).length) {
+    progress.receipts = kept;
+    writeProgress(progress);
+  }
 }
 
 // ------------------------------------------------------------------ args
@@ -570,7 +647,43 @@ const GH_DEVICE_URL = "https://github.com/login/device";
 const GH_ONE_TIME_CODE = /\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/;
 
 /**
- * The web sign-in of gh, run so that the panel can carry it.
+ * What the course needs gh to hold on top of what a sign-in gives by default.
+ *
+ * `workflow`: GitHub refuses a push that adds or changes a file under
+ * .github/workflows unless the token holds it. The course ships workflows and
+ * changes them, so Update my course brings workflow changes, and Reset this
+ * level can put back older ones. Without it the push is refused with "refusing
+ * to allow an OAuth App to create or update workflow".
+ */
+const GH_SCOPES = ["workflow"];
+
+/**
+ * The scopes the course needs that the gh token does not hold. Empty when gh
+ * does not say which scopes it has, as with a GH_TOKEN or a fine-grained token:
+ * those are not something gh auth refresh can change, so nothing is asked.
+ */
+function ghMissingScopes() {
+  const res = run("gh", ["auth", "status", "--hostname", "github.com"], { capture: true, quiet: true });
+  const line = `${res.stdout}\n${res.stderr}`.split(/\r?\n/).find((one) => /Token scopes:/i.test(one));
+  if (!line) {
+    return [];
+  }
+  const held = [...line.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  return GH_SCOPES.filter((scope) => !held.includes(scope));
+}
+
+/** The web sign-in of gh, with the scopes the course needs from the start. */
+async function ghAuthLogin() {
+  return ghWebFlow(
+    ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--scopes", GH_SCOPES.join(",")],
+    "    A browser window opens. Answer GitHub.com, HTTPS, and sign in there."
+  );
+}
+
+/**
+ * A gh command that goes through the browser with a one-time code, run so that
+ * the panel can carry it: the sign-in, or the refresh that adds a scope to a
+ * token gh already has.
  *
  * gh with a terminal prints the one-time code there and opens the browser
  * itself. Started from the panel it has no terminal: it still prints the code
@@ -579,10 +692,9 @@ const GH_ONE_TIME_CODE = /\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/;
  * see. The code is lifted out of its output and shown in the panel instead, and
  * the page is opened here.
  */
-async function ghAuthLogin() {
-  const args = ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"];
+async function ghWebFlow(args, terminalHint) {
   if (!panel.isActive()) {
-    info(c.dim("    A browser window opens. Answer GitHub.com, HTTPS, and sign in there."));
+    info(c.dim(terminalHint));
     info("");
     return run("gh", args).code;
   }
@@ -613,6 +725,9 @@ async function ghAuthLogin() {
  *
  * Signing in happens here rather than in a message telling somebody to type a
  * command: this course never sends anybody to a terminal.
+ *
+ * Returns true when the learner signed in just now, so the account is the one
+ * they picked a second ago, and false when gh already held one.
  */
 export async function ensureGh() {
   if (!hasGh()) {
@@ -625,7 +740,8 @@ export async function ensureGh() {
     );
   }
   if (ghSignedIn()) {
-    return;
+    await ensureGhScopes();
+    return false;
   }
 
   info("");
@@ -642,6 +758,154 @@ export async function ensureGh() {
   // which is not something a Source Control panel can answer.
   run("gh", ["auth", "setup-git", "--hostname", "github.com"], { capture: true, quiet: true });
   ok("Signed in to GitHub.");
+  return true;
+}
+
+/**
+ * The GitHub account the fork is about to go to, confirmed before it is made.
+ *
+ * gh forks into the account it is signed in as, and it keeps a sign-in for a
+ * year. A learner on a machine that still holds a former employer's account, or
+ * a work account next to their own, would get the fork in the wrong place
+ * without a word: VS Code and git may show another name, gh does not care.
+ * So the question names the account, and offers the others gh holds.
+ *
+ * `preselected` is the --account flag: one of the accounts gh holds, which is
+ * switched to when it is not the active one. Without a terminal or a panel to
+ * ask in, and with --yes, the active account is kept and said, the way the
+ * other questions of this command take their default.
+ *
+ * Returns false when the learner chose to stop, true otherwise.
+ */
+export async function confirmGhAccount(preselected, { assumeYes = false } = {}) {
+  const accounts = ghAccounts();
+  const active = accounts.find((one) => one.active);
+  if (!active) {
+    // gh is signed in, since ensureGh came first, but in a shape this does not
+    // read: an older gh, or a host it words differently. Nothing to offer.
+    return true;
+  }
+  if (!preselected && (assumeYes || !isInteractive())) {
+    if (panelGone()) {
+      abortPanelGone("Which GitHub account should the fork go to?");
+    }
+    info(`The fork goes to the GitHub account ${c.bold(active.login)}. Another one: pass --account <login>.`);
+    return true;
+  }
+
+  // A token from GH_TOKEN or GITHUB_TOKEN is not something gh can switch away
+  // from, nor sign in next to: only keeping it or stopping make sense.
+  const fromVariable = /TOKEN/.test(active.source || "");
+  const others = fromVariable ? [] : accounts.filter((one) => !one.active);
+  const choices = [
+    { value: active.login, label: `Yes, use ${active.login}`, hint: fromVariable ? `the account of ${active.source}` : undefined },
+    ...others.map((one) => ({ value: one.login, label: `Use ${one.login} instead`, hint: "another account gh is signed in to" })),
+    ...(fromVariable ? [] : [{ value: ANOTHER_ACCOUNT, label: "Sign in with another GitHub account" }]),
+    { value: STOP, label: "Stop, nothing is changed" }
+  ];
+  const picked = await select(`Fork the course into the GitHub account ${active.login}?`, choices, preselected, "account");
+  if (picked === STOP) {
+    return false;
+  }
+  if (picked === active.login) {
+    return true;
+  }
+  if (picked === ANOTHER_ACCOUNT) {
+    info("");
+    info("In the browser, sign in to GitHub with the account you want the fork in.");
+    info(c.dim("    If GitHub opens on the other account, sign out of it there first."));
+    const code = await ghAuthLogin();
+    if (code !== 0 || !ghSignedIn()) {
+      abort(
+        "The GitHub sign-in did not finish.",
+        "Click the command again: a new code is given, and the sign-in starts over."
+      );
+    }
+  } else {
+    const switched = run("gh", ["auth", "switch", "--hostname", "github.com", "--user", picked], { capture: true, quiet: true });
+    if (switched.code !== 0) {
+      abort(
+        `gh could not switch to ${picked}.`,
+        "Click the command again and pick Sign in with another GitHub account."
+      );
+    }
+    await ensureGhScopes();
+  }
+  // git asks gh for its credentials, so it follows the account picked here
+  run("gh", ["auth", "setup-git", "--hostname", "github.com"], { capture: true, quiet: true });
+  ok("GitHub account changed.");
+  return true;
+}
+
+/**
+ * Reads the accounts out of `gh auth status`, which has no JSON output on the
+ * versions learners have. Since gh 2.40 it prints one block per account:
+ *
+ *   ✓ Logged in to github.com account octocat (keyring)
+ *   - Active account: true
+ *
+ * and before that one line, for the only account: "Logged in to github.com as
+ * octocat (...)". An account whose token gh could not use is left out: it can
+ * neither be forked into nor switched to.
+ */
+export function parseGhAccounts(text) {
+  const accounts = [];
+  // The account the next "Active account" line is about, none after a failed one
+  let current = null;
+  for (const line of String(text).split(/\r?\n/)) {
+    if (/Failed to log in to github\.com/i.test(line)) {
+      current = null;
+      continue;
+    }
+    const login = line.match(/Logged in to github\.com (?:account|as) ([A-Za-z0-9-]+)(?: \(([^)]*)\))?/);
+    if (login) {
+      current = { login: login[1], source: login[2] || "", active: !/ account /.test(line) };
+      accounts.push(current);
+      continue;
+    }
+    const activeLine = line.match(/Active account:\s*(true|false)/i);
+    if (activeLine && current) {
+      current.active = activeLine[1].toLowerCase() === "true";
+    }
+  }
+  return accounts;
+}
+
+/** Two answers of the account question that are not account names. */
+const ANOTHER_ACCOUNT = "another-account";
+const STOP = "stop";
+
+/** The github.com accounts gh holds, the active one marked. */
+function ghAccounts() {
+  const res = run("gh", ["auth", "status", "--hostname", "github.com"], { capture: true, quiet: true });
+  return parseGhAccounts(`${res.stdout}\n${res.stderr}`);
+}
+
+/**
+ * The scopes of GH_SCOPES, added to a token that was made without them: every
+ * learner who signed in before the course asked for them. One more pass through
+ * the browser, once, then git is pointed at that token again, since a push made
+ * with another one would be refused the same way.
+ */
+async function ensureGhScopes() {
+  const missing = ghMissingScopes();
+  if (missing.length === 0) {
+    return;
+  }
+  info("");
+  info(`GitHub needs one more permission for the course: ${c.bold(missing.join(", "))}, to push changes to the workflow files of your fork.`);
+  const code = await ghWebFlow(
+    ["auth", "refresh", "--hostname", "github.com", "--scopes", missing.join(",")],
+    "    A browser window opens. Type the code printed here and approve."
+  );
+  if (code !== 0 || ghMissingScopes().length > 0) {
+    abort(
+      "GitHub did not grant the permission.",
+      "Click the command again: a new code is given, and it starts over."
+    );
+  }
+  run("gh", ["auth", "setup-git", "--hostname", "github.com"], { capture: true, quiet: true });
+  ok("GitHub permission granted.");
 }
 
 /** Opens a page in the default browser, and always prints it in case it does not. */
@@ -653,4 +917,46 @@ export function openUrl(url) {
       : { command: "xdg-open", args: [url] };
   const res = run(opener.command, opener.args, { capture: true, quiet: true });
   return res.code === 0;
+}
+
+/** A date and minute for branch names: 2026-09-24-0930, local time. */
+export function stamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+/**
+ * Opens a Pull Request of the fork with gh, and returns its address, or null.
+ *
+ * Retried three times, two seconds apart: right after a push, GitHub has not
+ * always registered the new branch, and the first gh pr create fails with "No
+ * commits between" or "head ref not found". The body goes through a file, which
+ * is removed whatever happens.
+ */
+export function openPullRequest({ slug, base, branch, title, body, draft = false }) {
+  if (!slug || !hasGh()) {
+    return null;
+  }
+  const bodyFile = path.join(ROOT, ".training-pr-body.md");
+  fs.writeFileSync(bodyFile, body, "utf8");
+  let url = null;
+  try {
+    for (let attempt = 1; attempt <= 3 && !url; attempt++) {
+      // Captured: the address of the Pull Request is what the learner opens
+      // next, and what gh prints goes nowhere they can see in the panel
+      const pr = run("gh", ["pr", "create", "--repo", slug, "--base", base, "--head", branch, "--title", title, "--body-file", bodyFile, ...(draft ? ["--draft"] : [])], {
+        capture: true,
+        quiet: true
+      });
+      if (pr.code === 0) {
+        url = (pr.stdout || "").match(/https:\/\/\S+\/pull\/\d+/)?.[0] || `https://github.com/${slug}/pulls`;
+      } else if (attempt < 3) {
+        run(process.execPath, ["-e", "const t = Date.now(); while (Date.now() - t < 2000) {}"], { quiet: true });
+      }
+    }
+  } finally {
+    fs.rmSync(bodyFile, { force: true });
+  }
+  return url;
 }

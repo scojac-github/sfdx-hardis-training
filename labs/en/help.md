@@ -34,6 +34,83 @@ somebody's bug report.
    [sfdx-hardis documentation](https://sfdx-hardis.cloudity.com/) and search the
    [issues](https://github.com/hardisgroupcom/sfdx-hardis/issues) before opening one.
 
+## When the course changed after you forked
+
+The lab pages are always current: you read them on this site. What your fork holds is fixed on
+the day you forked it: the scripts behind the **Training** menu, the teammate stories of
+**Simulate my teammates**, the rules of **Check my work** and the project configuration. When the
+course adds a lab or fixes one of those, your fork does not get it on its own.
+
+Every training command tells you when that happened: it checks your fork against the course
+first, and says how many changes you are missing. **Where am I?** always shows it. Changes to the
+lab pages, the translations, the site and the badges of other learners are left out, since you read
+them here and they change nothing your fork runs.
+
+To bring the changes in, click **Update my course** in the Training menu of your level, and wait
+for it to finish. It merges the course into a branch of its own, made from your `integration`, and
+opens a Pull Request into `integration`, like every change in this course. Then it waits for the
+checks of that Pull Request, merges it with a merge commit, never a squash, and brings the result
+to the branch you are on. There is nothing to click in between, and your work is kept.
+
+If a check fails, the command stops before merging and gives you the link of the Pull Request.
+Once that is sorted out, click **Update my course** again: it picks the same Pull Request up.
+
+If the course and you changed the same file, the command stops, undoes everything and names the
+files. Then either **Reset this level**, which starts the level again from its current state and
+throws away your work on `integration` in that level, or merge by hand the way
+[Lab 2.7](level-2-contributor-advanced/2-7-resolve-a-git-merge-conflict.md) solves a conflict.
+
+## When Claim my badge says your work is only on this computer
+
+**Claim my badge** stops when a branch holds commits that are not on your fork, because the audit
+reads your fork on GitHub. Push only sends the branch you are on: switch to each branch it names,
+then Push, and claim again.
+
+On a fork made before 2026-09-26, the command can also name `integration`, as `integration [ahead 2]`
+for example, after **Reset this level**, even though your work is on GitHub. Pushing does not help:
+`integration` only takes Pull Requests. Click **Update my course**, which brings the fix, then claim
+again. Or, in a terminal of VS Code (**Terminal** > **New Terminal**):
+
+```sh
+git fetch origin
+git branch --set-upstream-to=origin/integration integration
+```
+
+Neither command changes your work or your fork. Then claim again: you do not need to redo the
+level.
+
+## Start the course over
+
+There are two ways back, depending on how far back you want to go.
+
+**Start one level again.** Click **Reset this level** in the Training menu of that level. It moves
+`integration` back to where the level starts, in your clone and in your fork. Then it offers two
+more things, and on a second attempt the answer to both is usually yes:
+
+- **Delete the branches of this level's labs**, here and in your fork. Deleting a branch in your
+  fork closes its Pull Request. This matters more than it looks: the labs give every story a fixed
+  name, and **New User Story** never reuses a branch that already exists, here or in your fork. With
+  the branches of your first attempt still there, it asks you for another name at every story
+- **Set up `helios-dev` and `helios-integration` again**, so the orgs match the start of the level
+  instead of carrying what you built the first time
+
+Last, on Level 3, it opens a Pull Request named **Deployment actions of the earlier levels** and
+merges it once its checks pass, which takes 3 to 5 minutes. The start of Level 3 holds the Level 2
+stories as one commit no Pull Request of your fork made, and a promotion only runs the deployment
+actions of the Pull Requests it carries: this one gives them a Pull Request.
+
+The reset does not turn GitHub Actions on or off. If you switched them off in your fork between two
+attempts, switch them back on before **Reset this level**: on Level 3 it waits for the checks of
+that Pull Request, and with Actions off they never start. The **Actions** tab of your fork shows
+which state it is in, and **Trigger my workflows** in the Training menu of Level 1 checks it for you.
+
+**Start the whole course again.** On GitHub, open your fork, then **Settings**, scroll down to
+**Danger Zone**, and click **Delete this repository**. Delete your local folder too. Then follow
+[Lab 1.2](level-1-contributor-basics/1-2-create-your-dev-hub-scratch-orgs-and-pipeline.md) again
+from [step 3, Get the repository](level-1-contributor-basics/1-2-create-your-dev-hub-scratch-orgs-and-pipeline.md#3-get-the-repository):
+your Developer Edition org and its connection in Orgs Manager are still there, and
+**Set up my training environment** does the rest, a new fork included.
+
 ## Help on a real project
 
 This course runs on a fictional company, with free orgs and a repository you create for yourself.
@@ -48,6 +125,17 @@ that work as a service, on top of the same open-source product this course teach
 - **Support.** A subscription that keeps a Cloudity expert reachable after go-live, with priority
   on deployment incidents, and a release manager as a service when you have nobody in the seat.
 
+DevOps is one practice among several. The same company delivers whole Salesforce projects:
+[Agentforce and Data Cloud](https://cloudity.com/services/ai-and-data/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help),
+[Revenue Cloud](https://cloudity.com/services/revenue-lifecycle-management/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help),
+[Field Service](https://cloudity.com/services/field-service-management/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help),
+[Marketing Cloud](https://cloudity.com/services/marketing-engagement-and-personalization/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help),
+[integration](https://cloudity.com/services/salesforce-implementation-integration/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help),
+and [Managed Services](https://cloudity.com/services/managed-services/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help) for a team that would rather have its org run for it.
+
+[![Cloudity, Salesforce consulting: Agentforce, Data Cloud, Revenue Cloud, Field Service, Marketing Cloud, Integration, Managed Services, DevOps](../_assets/brand/cloudity-services-en.png){ .cloudity-banner .wide-only loading=lazy }](https://cloudity.com/services/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help)
+[![Cloudity, Salesforce consulting: Agentforce, Data Cloud, Revenue Cloud, Field Service, Marketing Cloud, Integration, Managed Services, DevOps](../_assets/brand/cloudity-services-en-narrow.png){ .cloudity-banner .narrow-only loading=lazy }](https://cloudity.com/services/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help)
+
 ## Support is what keeps sfdx-hardis maintained
 
 sfdx-hardis is free to use. It is not free to maintain. Three Salesforce releases a year, metadata
@@ -59,4 +147,5 @@ Support subscriptions are what pays for it, and for this course being free. If y
 deliveries on sfdx-hardis, a subscription is the most direct way to keep the project alive and
 moving, and it puts your feature requests in front of the people who decide what ships next.
 
-[What Cloudity offers](https://sfdx-hardis.cloudity.com/salesforce-devops-home/#get-help-from-cloudity){ .md-button .md-button--primary }
+[What Cloudity offers for DevOps](https://sfdx-hardis.cloudity.com/salesforce-devops-home/#get-help-from-cloudity){ .md-button .md-button--primary }
+[All Cloudity services](https://cloudity.com/services/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=help){ .md-button }

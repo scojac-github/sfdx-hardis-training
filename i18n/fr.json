@@ -1,6 +1,31 @@
 {
   "$comment": "Les pages générées par le site, en français : le backlog, une story, l'index des badges et une page de badge. S'y ajoute la traduction de ce que training-universe.json écrit en anglais : le pitch, les niveaux, les rôles et les User Stories. labs/en/ et i18n/en.json restent la référence. Lu par scripts/lib/strings.mjs.",
   "lang": "fr",
+  "banners": {
+    "course": {
+      "eyebrow": "FORMATION GRATUITE ET PRATIQUE",
+      "title": "Salesforce DevOps",
+      "titleLight": "avec sfdx-hardis",
+      "subtitle": "De votre première Pull Request au pilotage de la pipeline",
+      "chips": [
+        "{levels} niveaux",
+        "{labs} labs",
+        "{levels} badges",
+        "100 % gratuit"
+      ],
+      "offeredBy": "offert par"
+    },
+    "services": {
+      "eyebrow": "Ce cours gratuit vous est offert par",
+      "tagline": "Conseil Salesforce",
+      "practices": [
+        ["Agentforce", "Data Cloud", "Revenue Cloud"],
+        ["Field Service", "Marketing Cloud", "Intégration"],
+        ["Services managés", "DevOps"]
+      ],
+      "button": "DÉCOUVRIR NOS SERVICES"
+    }
+  },
   "backlog": {
     "title": "Backlog Helios Energy : les User Stories du cours",
     "description": "Toutes les User Stories de la formation Salesforce DevOps avec sfdx-hardis, avec leurs critères d'acceptation, leur branch Git et le lab qui les livre.",
@@ -26,6 +51,136 @@
     "backToBacklog": "Toutes les stories du backlog",
     "labLink": "Lab {level}.{lab} - {title}"
   },
+  "stats": {
+    "title": "Statistiques de la formation Salesforce DevOps",
+    "description": "Combien de personnes commencent et terminent chaque niveau de la formation Salesforce DevOps gratuite avec sfdx-hardis, et le temps que les labs leur prennent vraiment.",
+    "heading": "Statistiques du cours",
+    "intro": [
+      "Lues chaque lundi et après chaque badge attribué, dans les repositories publics des {learners} personnes qui ont installé le cours, et dans les badges qu'elles ont réclamés.",
+      "Dernière mise à jour : {date}."
+    ],
+    "level": "Niveau {level} - {name}",
+    "lab": "Lab {lab}",
+    "labs": "Labs {first} à {last}",
+    "labsPair": "Labs {first} et {last}",
+    "percent": "{value} %",
+    "notEnough": "pas encore assez de données",
+    "observed": "(observé : médiane {median}, {learners}{fastest})",
+    "learnerOne": "1 participant",
+    "learnerMany": "{sample} participants",
+    "fastest": ", le plus rapide {time}",
+    "observedTogether": "({labs} observés ensemble : médiane {median}, {learners}{fastest})",
+    "observedLevel": "Observé sur les {labs} : médiane {median}, {learners}{fastest}.",
+    "empty": "Pas encore de chiffres. Ils sont lus chaque lundi et après chaque badge attribué, et la première lecture n'a pas eu lieu.",
+    "funnel": {
+      "heading": "Commencés et terminés",
+      "intro": [
+        "Un niveau est commencé quand sa première branche existe dans le repository de la personne, et terminé quand son badge a été décerné."
+      ],
+      "columns": [
+        "Niveau",
+        "Commencé",
+        "Part des participants",
+        "Terminé",
+        "Part des commencés"
+      ]
+    },
+    "time": {
+      "heading": "Temps passé",
+      "intro": [
+        "Le temps médian des personnes qui sont allées au bout, à côté de l'estimation avec laquelle chaque lab a été écrit. Un chiffre apparaît quand {minSample} personnes sont derrière lui, et c'est alors le temps que la page du lab annonce. En dessous, le lab garde son estimation."
+      ],
+      "levelColumns": [
+        "Niveau",
+        "Estimation initiale",
+        "Médiane",
+        "Le plus rapide",
+        "Participants"
+      ],
+      "labColumns": [
+        "Labs",
+        "Estimation initiale",
+        "Médiane",
+        "Le plus rapide",
+        "Participants"
+      ],
+      "byLab": {
+        "heading": "Lab par lab",
+        "intro": [
+          "D'après les personnes qui ont lancé **Check my work** à la fin de chaque lab : leurs reçus disent quand chacun est passé."
+        ]
+      }
+    },
+    "method": {
+      "heading": "Comment le temps est mesuré",
+      "body": [
+        "Personne n'est chronométré. Le temps est lu après coup, entre les commits, les Pull Requests et les commentaires de Pull Request de chaque repository : un lab se termine quand sa Pull Request est mergée, et commence à la fin du précédent.",
+        "",
+        "Une pause de plus de {cutoff} minutes n'est pas comptée, donc une personne qui s'arrête pour la nuit n'ajoute rien. Le travail fait dans l'org ne laisse aucune trace sur GitHub, ce qui fait de chaque chiffre une estimation basse.",
+        "",
+        "Les Labs 1.1 et 1.2 installent les outils et créent les orgs avant que le repository existe. Ils ne sont pas mesurés, et le Niveau 1 est compté à partir du Lab 1.3.",
+        "",
+        "Les labs qui partagent une Pull Request sont mesurés ensemble.",
+        "",
+        "Le plus rapide est le temps le plus court dans lequel quelqu'un a pu faire le lab. Un chiffre de moins de cinq minutes, ou de moins d'un quart de la médiane, correspond à deux labs vérifiés à la suite et est écarté. Le plus lent n'est pas affiché : c'est quelqu'un qui a été interrompu.",
+        "",
+        "Le temps qu'annonce la page d'un lab est cette médiane, arrondie aux cinq minutes inférieures, et le temps d'un niveau est arrondi au quart d'heure inférieur. Un lab mesuré avec d'autres prend sa part de leur temps, et un lab que moins de {minSample} personnes ont terminé garde son estimation. Les pages sont réécrites d'après les chiffres chaque lundi et après chaque badge attribué."
+      ]
+    }
+  },
+  "hallOfFame": {
+    "title": "Hall of Fame de Guinea Run",
+    "description": "Les meilleurs joueurs de Guinea Run, le jeu caché dans la formation Salesforce DevOps gratuite avec sfdx-hardis : au général et monde par monde.",
+    "heading": "Hall of Fame",
+    "intro": [
+      "Guinea Run est un jeu caché dans ce site. Trouvez le cochon d'Inde à la fin du pied de page de n'importe quelle page, et jouez.",
+      "",
+      "Chaque monde garde le meilleur score de chaque joueur. Choisissez une fois un pseudo et un cochon d'Inde dans le jeu, après votre premier monde : ensuite, vos meilleurs scores arrivent ici tout seuls."
+    ],
+    "privacy": "Visible par tous : le pseudo, le cochon d'Inde et les scores de chaque joueur. Rien d'autre n'est enregistré : ni compte, ni e-mail. Un joueur peut se retirer depuis le Hall of Fame du jeu.",
+    "loading": "Lecture du Hall of Fame...",
+    "offline": "Le Hall of Fame ne peut pas être lu pour l'instant. Réessayez dans un moment.",
+    "empty": "Personne pour l'instant. Jouez, choisissez un pseudo, et soyez le premier.",
+    "general": {
+      "heading": "Tous les mondes",
+      "intro": "Le meilleur score de chaque monde, additionné. Les {count} premiers joueurs."
+    },
+    "worlds": {
+      "heading": "Monde par monde",
+      "intro": "Les {count} premiers joueurs de chaque monde. À égalité, le plus d'étoiles passe devant, puis le boss le plus rapide."
+    },
+    "world": "Monde {n} - {name}",
+    "worldEmpty": "Personne n'a encore terminé ce monde.",
+    "generalColumns": ["#", "Joueur", "Total", "Étoiles"],
+    "worldColumns": [
+      "#",
+      "Joueur",
+      "Score",
+      "Mode",
+      "Étoiles",
+      "Temps du boss"
+    ],
+    "seconds": "{value} s",
+    "pinball": {
+      "heading": "Pipeline Pinball",
+      "intro": "La table bonus, ouverte à ceux qui ont terminé les dix mondes. La meilleure partie de chaque joueur, à part : elle ne compte pas dans le total. Les {count} premiers joueurs.",
+      "empty": "Personne n'a encore de partie de la table bonus ici.",
+      "columns": ["#", "Joueur", "Score", "Niveau", "Missions", "Minutes"]
+    },
+    "orgman": {
+      "heading": "Org-Man",
+      "intro": "Le labyrinthe, ouvert à ceux qui ont terminé les dix mondes. La meilleure partie de chaque joueur, à part : elle ne compte pas dans le total. Les {count} premiers joueurs.",
+      "empty": "Personne n'a encore de partie d'Org-Man ici.",
+      "columns": [
+        "#",
+        "Joueur",
+        "Score",
+        "Labyrinthe",
+        "Admins attrapés",
+        "Minutes"
+      ]
+    }
+  },
   "badges": {
     "title": "Badges de la formation Salesforce DevOps",
     "description": "Les personnes qui ont terminé un niveau de la formation Salesforce DevOps gratuite avec sfdx-hardis, vérifiées par un job qui a lu leur repository public.",
@@ -36,8 +191,10 @@
       "C'est un badge, pas une certification : il n'y a pas d'examen ici. Ce qu'il dit, c'est qu'un job a",
       "lu le repository public de la personne et y a trouvé le travail."
     ],
-    "columns": ["", "Nom", "Badge le plus élevé", "GitHub", "Trailblazer"],
+    "columns": ["", "Nom", "Obtenu le", "GitHub", "Trailblazer"],
+    "awardedAt": "{date} {time} UTC",
     "nobody": "Personne n'a encore réclamé de badge. Soyez la première personne.",
+    "totals": "Décernés à ce jour :",
     "claim": {
       "heading": "Réclamer le vôtre",
       "body": [
@@ -65,6 +222,19 @@
         "réussies et l'URL de son image. Ces fichiers sont servis avec `Access-Control-Allow-Origin: *`,",
         "donc une page dans un navigateur peut les lire directement."
       ]
+    },
+    "banner": {
+      "heading": "La mettre en bannière LinkedIn",
+      "intro": [
+        "[Trailhead Banner](https://thb.nabondance.me/) est l'un de ces outils. Il dessine une image de",
+        "couverture LinkedIn à partir d'un nom d'utilisateur Trailblazer : le rang, les compteurs de badges",
+        "et de certifications, et le badge sfdx-hardis le plus élevé que la personne a réclamé ici."
+      ],
+      "alt": "Une bannière Trailhead, avec un badge de la formation sfdx-hardis sur la rangée du haut",
+      "outro": [
+        "Tapez votre nom d'utilisateur Trailblazer, générez l'image, et mettez-la en bannière de votre profil",
+        "LinkedIn. Rien à installer et aucun compte à créer : le badge est public et indexé par ce nom."
+      ]
     }
   },
   "badge": {
@@ -83,7 +253,7 @@
         "niveau 2 rejoue aussi les vérifications du niveau 1, et un badge de niveau 3 rejoue les trois.",
         "",
         "Ce qui est vérifié, c'est le travail dans le repository : les champs, les deployment actions, les",
-        "conflits résolus, la configuration du pipeline. Ce qui n'est **pas** vérifié, c'est l'état des orgs",
+        "conflits résolus, la configuration de la pipeline. Ce qui n'est **pas** vérifié, c'est l'état des orgs",
         "Salesforce de qui que ce soit. Personne ne demande d'identifiants d'org, et ceci n'est pas un examen."
       ]
     },
@@ -94,10 +264,45 @@
         "une formation suivie. Pas dans *Licences et certifications*."
       ]
     },
+    "cloudity": {
+      "heading": "Qui est derrière ce badge",
+      "body": [
+        "Le cours est gratuit et open source. Il est offert par [Cloudity](https://cloudity.com/fr/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=badge), la société de",
+        "conseil Salesforce qui développe sfdx-hardis et mène ses propres projets avec : Agentforce et Data Cloud,",
+        "Revenue Cloud, Field Service, services managés et Salesforce DevOps."
+      ],
+      "link": "[Découvrir ce que fait Cloudity](https://cloudity.com/fr/services/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=badge)",
+      "bannerAlt": "Cloudity, conseil Salesforce : Agentforce, Data Cloud, Revenue Cloud, Field Service, Marketing Cloud, intégration, services managés, DevOps",
+      "bannerUrl": "https://cloudity.com/fr/services/?utm_source=sfdx-hardis-training&utm_medium=referral&utm_campaign=badge"
+    },
     "takeTheCourse": "Suivre le cours",
     "description": "{name} a obtenu le badge {badge} de la formation Salesforce DevOps gratuite avec sfdx-hardis, vérifié par un job qui a lu son repository public.",
     "shareHeading": "Le partager",
-    "shareText": "{name} a obtenu le badge {badge} de la formation Salesforce DevOps gratuite avec sfdx-hardis",
+    "shareTitle": "{name} a obtenu le badge {badge}",
+    "shareIntro": "LinkedIn s'ouvre avec ce post déjà écrit. Il est aussi ici, à copier :",
+    "shareText": "Je viens d'obtenir le badge {badge} de la formation Salesforce DevOps gratuite avec sfdx-hardis",
+    "postText": [
+      "Je viens d'obtenir le badge {badge} 🎉 {page}",
+      "",
+      "Une formation Salesforce DevOps gratuite et concrète : de vraies Pull Requests, une vraie pipeline, vérifiées sur mon repository public.",
+      "",
+      "Obtenez le vôtre : {course}",
+      "",
+      "#Salesforce #DevOps #sfdxhardis"
+    ],
+    "picture": {
+      "heading": "Le publier avec l'image en grand",
+      "body": [
+        "LinkedIn affiche un lien en petite vignette. Pour montrer le badge en grand, joignez cette image au post :"
+      ],
+      "steps": [
+        "Téléchargez l'image.",
+        "Copiez le post ci-dessus, avec le bouton en haut à droite.",
+        "[Commencez un post sur LinkedIn](https://www.linkedin.com/feed/?shareActive=true), collez le texte et ajoutez l'image."
+      ],
+      "download": "Télécharger l'image",
+      "alt": "{name}, {badge}"
+    },
     "networks": {
       "linkedin": "LinkedIn",
       "x": "X",
@@ -105,6 +310,19 @@
       "bluesky": "Bluesky",
       "whatsapp": "WhatsApp",
       "email": "E-mail"
+    },
+    "banner": {
+      "heading": "Le mettre dans une bannière",
+      "body": [
+        "La même récompense dessinée pour une rangée de vingt : le logo Cloudity, sfdx-hardis, et de quel niveau il",
+        "s'agit, et rien de personnel. Une image par niveau, partagée par toutes les personnes qui l'ont obtenue, et",
+        "c'est ce qui rend son adresse publiable.",
+        "",
+        "[Trailhead Banner](https://thb.nabondance.me/) la lit dans le record : tapez votre nom d'utilisateur Trailblazer",
+        "et l'outil dessine une bannière LinkedIn avec votre rang, vos compteurs de badges et de certifications, et le",
+        "badge le plus élevé que vous avez réclamé ici. Générez-la, puis mettez-la en bannière de votre profil LinkedIn."
+      ],
+      "record": "Le record complet, en JSON"
     }
   },
   "universe": {
@@ -118,7 +336,7 @@
     },
     "cast": {
       "victor": {
-        "role": "Release manager. A quitté l'entreprise entre le niveau 2 et le niveau 3, et c'est pour cela que le pipeline est le vôtre maintenant."
+        "role": "Release manager. A quitté l'entreprise entre le niveau 2 et le niveau 3, et c'est pour cela que la pipeline est la vôtre maintenant."
       },
       "mariia": {
         "role": "Contributrice senior. Merge avant vous, sur les fichiers que vous avez touchés."
@@ -171,6 +389,15 @@
         "title": "Générer un PDF de devis depuis une opportunité",
         "story": "En tant que commercial, je veux un bouton qui génère le PDF du devis, afin d'arrêter de le refaire dans un tableur.",
         "acceptance": ["L'autorisation est donnée aux managers"]
+      },
+      "US-050": {
+        "title": "Configurer la pipeline jusqu'à la production",
+        "story": "En tant que release manager, je veux que la pipeline passe par preprod jusqu'à la production, avec les deux orgs authentifiées par JWT, afin que chaque release arrive en production de la même façon.",
+        "acceptance": [
+          "preprod et main nomment chacune leur org dans leur configuration de branch",
+          "preprod et main s'authentifient avec une External Client App et JWT",
+          "Les contributeurs peuvent démarrer un hotfix depuis preprod"
+        ]
       },
       "US-052": {
         "title": "La présentation de page Installation sur deux colonnes",
@@ -277,8 +504,60 @@
           "Une formule Crew Workload sur Installation",
           "Sur la présentation de page, lisible par les managers"
         ]
+      },
+      "US-062": {
+        "title": "Réunir les delivery managers dans un groupe Crew Leads",
+        "story": "En tant que planificateur, je veux tous les delivery managers dans un même groupe Crew Leads, afin de partager les plannings d'installation une seule fois au lieu de personne par personne.",
+        "acceptance": [
+          "Un groupe public Crew Leads qui contient tous les delivery managers",
+          "La capacité des équipes recalculée une fois après le déploiement"
+        ]
+      },
+      "US-057": {
+        "title": "Mettre en pause une installation qui attend une pièce",
+        "story": "En tant que planificateur, je veux un statut pour une installation bloquée par une pièce manquante, afin que le rapport hebdomadaire cesse de la compter en retard.",
+        "acceptance": [
+          "Status propose Awaiting Parts",
+          "Les planificateurs peuvent le choisir sur une installation déjà planifiée"
+        ]
+      },
+      "US-058": {
+        "title": "Enregistrer la durée de garantie sur un panel batch",
+        "story": "En tant que commercial, je veux que la durée de garantie soit stockée sur le panel batch, afin que le devis dise combien de temps les panneaux sont couverts.",
+        "acceptance": [
+          "Un champ Warranty Years existe sur Panel Batch",
+          "Il est sur la présentation de page Panel Batch",
+          "Les managers peuvent le lire et l'écrire"
+        ]
+      },
+      "US-059": {
+        "title": "Enregistrer le fournisseur d'un panel batch",
+        "story": "En tant qu'acheteur, je veux que le fournisseur soit stocké sur le panel batch, afin qu'une demande de garantie parte chez la bonne entreprise sans ressortir la facture.",
+        "acceptance": [
+          "Un champ Supplier existe sur Panel Batch",
+          "Il est sur la présentation de page Panel Batch",
+          "Les managers peuvent le lire et l'écrire"
+        ]
+      },
+      "US-060": {
+        "title": "Signaler une installation qui a besoin d'un échafaudage",
+        "story": "En tant que planificateur, je veux signaler une installation qui a besoin d'un échafaudage, afin que l'équipe le réserve avant le jour J au lieu de le découvrir sur place.",
+        "acceptance": [
+          "Une case à cocher Scaffolding Required existe sur Installation",
+          "Elle est sur la présentation de page Installation",
+          "Les équipes de pose la voient, les planificateurs la cochent"
+        ]
+      },
+      "US-061": {
+        "title": "Enregistrer le code du portail d'un site",
+        "story": "En tant que membre de l'équipe de pose, je veux le code du portail du site sur l'installation, afin d'entrer sans appeler le client à sept heures du matin.",
+        "acceptance": [
+          "Un champ Gate Code existe sur Installation",
+          "Il est sur la présentation de page Installation",
+          "Les équipes de pose le lisent, les planificateurs le modifient"
+        ]
       }
     }
   },
-  "source_rev": "0ed9aee7fa8e613181c1d71f572ac750ff9232ed"
+  "source_rev": "4e3f39299efe1f5811884d255aa6e182e6e84aff"
 }

@@ -20,6 +20,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { SITE_URL as CANONICAL_SITE_URL } from "../lib/urls.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
@@ -67,6 +68,29 @@ const SITE_URL = (() => {
 
 const pages = walk(SITE);
 const problems = [];
+
+// course-site.yml and scripts/lib/urls.mjs each say where this site is published,
+// one for the theme and one for the scripts. They move together or the site
+// declares a canonical it is not served at, which is the kind of thing nobody
+// notices until a search engine does.
+if (SITE_URL !== `${CANONICAL_SITE_URL}/`) {
+  problems.push(
+    `course-site.yml site_url is ${SITE_URL || "missing"}, scripts/lib/urls.mjs SITE_URL is ${CANONICAL_SITE_URL}`
+  );
+}
+
+// The publish step force-pushes an orphan branch, so the CNAME file it writes is
+// the only thing that keeps the custom domain on the host. A cname that names
+// another host, or none, takes the course off its address at the next push.
+const publishedCname = (() => {
+  const match = fs.readFileSync(path.join(ROOT, ".github", "workflows", "pages.yml"), "utf8").match(/^\s*cname:\s*(\S+)/m);
+  return match ? match[1] : null;
+})();
+if (publishedCname !== new URL(CANONICAL_SITE_URL).host) {
+  problems.push(
+    `.github/workflows/pages.yml publishes cname ${publishedCname || "missing"}, scripts/lib/urls.mjs SITE_URL is ${CANONICAL_SITE_URL}`
+  );
+}
 let references = 0;
 let links_checked = 0;
 let cards = 0;
@@ -142,8 +166,63 @@ for (const file of pages) {
   }
 }
 
+// The badge records are read by other sites: the Trailhead Banner project asks
+// one for a Trailblazer username and draws what it points at. Both pictures of
+// each badge have to be there, the full one and the banner one.
+let badgeImages = 0;
+const recordsDir = path.join(SITE, "badges");
+if (fs.existsSync(recordsDir) && SITE_URL) {
+  for (const file of fs.readdirSync(recordsDir)) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    let record;
+    try {
+      record = JSON.parse(fs.readFileSync(path.join(recordsDir, file), "utf8"));
+    } catch (error) {
+      problems.push(`/badges/${file} is not readable JSON: ${error.message}`);
+      continue;
+    }
+    for (const badge of record.badges || []) {
+      for (const key of ["image", "bannerImage"]) {
+        const url = badge[key];
+        if (!url) {
+          problems.push(`/badges/${file} level ${badge.level} has no ${key}`);
+          continue;
+        }
+        if (!url.startsWith(SITE_URL)) {
+          problems.push(`/badges/${file} -> ${url} (${key} is not on this site)`);
+          continue;
+        }
+        badgeImages++;
+        if (!fs.existsSync(path.join(SITE, url.slice(SITE_URL.length)))) {
+          problems.push(`/badges/${file} -> ${url} (${key}, no such file)`);
+        }
+      }
+    }
+  }
+}
+
+// The statistics page is generated, like the badges, and is in the menu of every
+// language: a build that skipped it leaves a menu entry that answers 404.
+const labLocales = fs
+  .readdirSync(path.join(ROOT, "labs"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && /^[a-z]{2}(-[A-Z]{2})?$/.test(entry.name))
+  .map((entry) => entry.name);
+for (const locale of labLocales) {
+  const page = path.join(locale === "en" ? "" : locale, "stats", "index.html");
+  if (!fs.existsSync(path.join(SITE, page))) {
+    problems.push(`/${page.replace(/\\/g, "/")} (the statistics page of ${locale} was not built)`);
+  }
+  // The Hall of Fame is generated the same way, but stays out of the menu
+  const hall = path.join(locale === "en" ? "" : locale, "hall-of-fame", "index.html");
+  if (!fs.existsSync(path.join(SITE, hall))) {
+    problems.push(`/${hall.replace(/\\/g, "/")} (the Hall of Fame page of ${locale} was not built)`);
+  }
+}
+
 console.log(
-  `${pages.length} page(s), ${references} local asset reference(s), ${links_checked} internal link(s), ${cards} share card(s).`
+  `${pages.length} page(s), ${references} local asset reference(s), ${links_checked} internal link(s), ${cards} share card(s), ${badgeImages} badge image(s) in records.`
 );
 
 if (problems.length > 0) {

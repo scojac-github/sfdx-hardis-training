@@ -22,7 +22,7 @@
  * username can ask the site what that person earned, with one GET and no index
  * to walk:
  *
- *     https://hardisgroupcom.github.io/sfdx-hardis-training/badges/nvuillamy.json
+ *     https://sfdx-hardis-training.cloudity.com/badges/nvuillamy.json
  *
  * The Trailhead Banner project works from a Trailblazer username, and a badge
  * filed under a GitHub login would be invisible to it. The GitHub handle stays
@@ -35,6 +35,7 @@ import { fileURLToPath } from "url";
 import { parseArgs } from "../lib/util.mjs";
 import { LEVELS, renderSvg } from "./badge-svg.mjs";
 import { writeCardFor } from "./social.mjs";
+import { bannerUrl, writeBanners } from "./banners.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
@@ -59,7 +60,10 @@ if (!audit.ok) {
 
 const handle = audit.handle;
 const level = audit.level;
-const today = new Date().toISOString().slice(0, 10);
+// The moment of the award, to the second and in UTC. The day is kept beside it
+// because the badge image and the sites that read a record print a date.
+const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+const today = now.slice(0, 10);
 const definition = LEVELS[level];
 const text = (value) => (typeof value === "string" && value.trim() ? value.trim() : null);
 
@@ -173,11 +177,17 @@ record.badges.push({
     course: SITE
   },
   issuedOn: today,
+  issuedAt: now,
   evidence: [
     { type: "Repository", url: audit.repo || null },
     { type: "ClaimIssue", url: args.issue ? `https://github.com/${UPSTREAM}/issues/${args.issue}` : null }
   ].filter((item) => item.url),
   image: `${SITE}/badges/img/${key}-level-${level}.svg`,
+  // The same award drawn for a Trailhead banner: one file per level, shared by
+  // every holder, because nothing in it is personal. See banners.mjs.
+  bannerImage: bannerUrl(level),
+  // Release Manager sits on top of the other two, which is what a superbadge is
+  superbadge: definition.superbadge === true,
   checksPassed: audit.passed,
   checksTotal: audit.total
 });
@@ -189,13 +199,18 @@ fs.writeFileSync(recordPath, JSON.stringify(record, null, 2) + "\n", "utf8");
 // language existed gains its page in it without anybody touching the claim, and
 // the words of that page live with the other translations, in i18n/<locale>.json.
 
-// The card a share of the badge page shows. Best effort on purpose: it needs a
-// browser, and a claim must not fail because one could not be installed. When it
-// does not happen here, the page falls back to the card of the course until
-// somebody runs scripts/badges/rerender.mjs.
-let card = null;
+// The three banner badges, in case a level was added or the template changed
+// since the last claim. No browser needed: they are SVG like the badge itself.
+writeBanners();
+
+// The card a share of the badge page shows, and the square picture the page
+// offers to attach to a post. Best effort on purpose: they need a browser, and a
+// claim must not fail because one could not be installed. When it does not
+// happen here, the page falls back to the card of the course and leaves the
+// picture out until somebody runs scripts/badges/rerender.mjs.
+let cards = [];
 try {
-  card = await writeCardFor(key);
+  cards = await writeCardFor(key);
 } catch (error) {
   console.warn(`  (no social card: ${error.message.split("\n")[0]})`);
 }
@@ -203,8 +218,8 @@ try {
 console.log(`Badge written for ${handle} as ${key}, level ${level}:`);
 console.log(`  badges/${key}.json`);
 console.log(`  badges/img/${key}-level-${level}.svg`);
-if (card) {
-  console.log(`  badges/social/${key}.png`);
+for (const card of cards) {
+  console.log(`  ${path.relative(ROOT, card).split(path.sep).join("/")}`);
 }
 if (movedFrom) {
   console.log(`  (moved from ${movedFrom}, which was removed)`);

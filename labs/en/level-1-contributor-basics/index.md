@@ -8,7 +8,7 @@ lang: en
 
 # Level 1 - Salesforce DevOps contributor basics
 
-**Time**: about 2 h 15, in one sitting or seven.
+**Time**: about 2 h, in one sitting or seven.<!-- observed --> Observed on Labs 1.3 to 1.7: median 1 h 31, 68 learners, fastest 33 min.<!-- /observed -->
 
 **Before you start**: nothing. This is the first level.
 
@@ -47,9 +47,9 @@ part.
 | [1.1](1-1-install-vs-code-and-sfdx-hardis.md)               | Install VS Code, Git and sfdx-hardis                  | 15 min |
 | [1.2](1-2-create-your-dev-hub-scratch-orgs-and-pipeline.md) | Create your Dev Hub, scratch orgs and CI/CD pipeline  | 30 min |
 | [1.3](1-3-start-a-user-story-on-a-git-branch.md)            | Start a User Story on its own Git branch              | 10 min |
-| [1.4](1-4-build-a-custom-field-in-your-org.md)              | Build a custom field in your Salesforce org           | 15 min |
-| [1.5](1-5-retrieve-commit-and-publish-your-changes.md)      | Retrieve, commit and publish your Salesforce changes  | 20 min |
-| [1.6](1-6-pull-request-deployment-check-and-merge.md)       | Open a Pull Request, pass the deployment check, merge | 20 min |
+| [1.4](1-4-build-a-custom-field-in-your-org.md)              | Build a custom field in your Salesforce org           | 10 min |
+| [1.5](1-5-retrieve-commit-and-publish-your-changes.md)      | Retrieve, commit and publish your Salesforce changes  | 15 min |
+| [1.6](1-6-pull-request-deployment-check-and-merge.md)       | Open a Pull Request, pass the deployment check, merge | 15 min |
 | [1.7](1-7-capstone-deliver-a-user-story-on-your-own.md)     | Capstone: deliver a User Story on your own            | 25 min |
 
 ## The Training menu
@@ -60,15 +60,17 @@ over the page:
 
 ![The Level 1 training menu, opened on the Welcome page](../../_assets/annotated/vscode/welcome-custom-menu.png)
 
-Five of them, and the labs call them by these names:
+Seven of them, and the labs call them by these names:
 
-| Command                            | What it does                                                                     |
-|------------------------------------|----------------------------------------------------------------------------------|
-| **Set up my training environment** | Forks the repository, creates your scratch orgs with the app, wires the pipeline |
-| **Where am I?**                    | Says which level and lab you reached, and what to do next                        |
-| **Check my work**                  | Verifies the lab you just finished and prints your receipt                       |
-| **Claim my badge**                 | Checks the whole level, then opens your badge claim filled in                    |
-| **Reset this level**               | Puts your repository back to the start of Level 1                                |
+| Command                            | What it does                                                                                                                                   |
+|------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Set up my training environment** | Forks the repository, creates your scratch orgs with the app, wires the pipeline                                                               |
+| **Where am I?**                    | Says which level and lab you reached, and what to do next                                                                                      |
+| **Check my work**                  | Verifies the lab you just finished                                                                                                             |
+| **Trigger my workflows**           | Starts the checks of your Pull Request when your fork had Actions switched off                                                                 |
+| **Claim my badge**                 | Checks the whole level, then opens your badge claim filled in                                                                                  |
+| **Update my course**               | Brings the changes the course received since you forked it, through a Pull Request into `integration`                                          |
+| **Reset this level**               | Starts Level 1 again: `integration`, and if you want the lab branches and the orgs ([Start the course over](../help.md#start-the-course-over)) |
 
 There is one menu per level, and each holds only what that level needs, so nothing in front of you is
 for a lab you have not reached.
@@ -85,13 +87,14 @@ because a card is easier to point at than a row.
 you and nobody else. Your changes, your mistakes, your fixes, and nothing you do reaches anybody
 else's work. Lab 1.2 sets that copy up for you in one click, and explains why it has to be that way.
 
-**You click, you do not type.** Every action in these labs is a button in the VS Code extension.
+**You click, you do not type command lines.** Every action in these labs is a button in the VS Code extension.
 Where a command appears, it is in an **Under the hood** block, which explains what the button did.
 You never have to retype it.
 
 **You can always start over.** If a lab goes wrong, Welcome page > **Training: Level 1** > **Reset this
-level** puts your repository back to the start of the level. One botched lab does not end your
-course.
+level** puts `integration` back to the start of the level, and offers to clear the branches of its
+labs and set your orgs up again. One botched lab does not end your course: [Start the course
+over](../help.md#start-the-course-over) says what each answer does.
 
 ## If you get stuck
 

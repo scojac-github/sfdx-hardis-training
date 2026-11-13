@@ -17,15 +17,23 @@
  *
  * It also fails on a lab that points at a raw screenshot rather than the
  * annotated copy, and on an annotated file nothing references.
+ *
+ * labs/_assets/badges/ and labs/_assets/brand/ are out of scope: they hold
+ * illustrations and banners, not captures of a step, so there is nothing to pill
+ * and nothing to drift.
  */
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { LAB_TEMPLATE, blockKind } from "../lib/lab-template.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
 const LABS = path.join(ROOT, "labs");
 const SPEC = path.join(LABS, "_assets", "annotations.json");
+
+// Illustrations, not screenshots of a step. See the header.
+const NOT_A_SCREENSHOT = /_assets\/(badges|brand)\//;
 
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) {
@@ -85,7 +93,14 @@ for (const file of localeDirs.flatMap((dir) => walk(dir))) {
   // screenshot then show it, others show it then walk through it; both read
   // well, so the check does not care which way round they are written.
   const bounds = [];
+  // The blocks of the step template (#### Do, #### Why...) are parts of one step,
+  // not steps: a Why block often walks through the picture its Do block shows
+  const words = LAB_TEMPLATE[rel.split("/")[1]] || LAB_TEMPLATE.en;
   lines.forEach((line, index) => {
+    const block = line.match(/^#### (.*)$/);
+    if (block && blockKind(block[1], words)) {
+      return;
+    }
     if (/^#{2,4} /.test(line)) {
       bounds.push(index);
     }
@@ -112,6 +127,9 @@ for (const file of localeDirs.flatMap((dir) => walk(dir))) {
     const before = problems.length;
     const declared = new Set();
     for (const image of images) {
+      if (NOT_A_SCREENSHOT.test(image.target)) {
+        continue;
+      }
       if (!/_assets\/annotated\//.test(image.target)) {
         problems.push(`${rel}:${image.line} points at a raw screenshot, not the annotated copy: ${image.target}`);
         continue;
